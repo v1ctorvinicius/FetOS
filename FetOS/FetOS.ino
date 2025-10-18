@@ -27,6 +27,7 @@ typedef struct {
   bool is_visible;
   app_run_t run;  // foreground (writes LCD)
   app_bg_t bg;    // background minimal (no LCD writes)
+  void (*fg)();   // interface (front)
   app_cleanup_t cleanup;
   char last_status[17];
 } app_t;
@@ -113,7 +114,9 @@ void icons_reload();
 void lcd_draw_lines(const char *line1, const char *line2);
 char state_icon(app_state_t s);
 void render_menu();
-void render_status_bar_for_app(uint8_t idx);
+void render_status_bar_for_showing_app(uint8_t idx);
+void render_header(const char *title);
+void render_header_for_app(uint8_t idx, bool forceRedraw = false);
 void handle_serial_char(char c);
 void scheduler_tick();
 void clock_app_run();
@@ -137,6 +140,7 @@ void app_show(uint8_t idx);
 #define LCD_D5 5
 #define LCD_D6 6
 #define LCD_D7 7
+#define D12 12
 #define LCD_CONTRASTE 11  // V0 (PWM)
 #define LCD_BACKLIGHT 10  // PWM
 #define LED_PIN 13
@@ -144,6 +148,8 @@ void app_show(uint8_t idx);
 // ---- Setup/loop ----
 void setup() {
   pinMode(LED_PIN, OUTPUT);
+  pinMode(D12, OUTPUT);
+  digitalWrite(D12, LOW);
   Serial.begin(9600);
   lcd_pwm_init();
   lcd_init();
@@ -154,42 +160,55 @@ void setup() {
 }
 
 void loop() {
+  static unsigned long last_tick = 0;
+  if (millis() - last_tick >= 80) {
+    last_tick = millis();
+    scheduler_tick();
+  }
   if (Serial.available()) handle_serial_char(Serial.read());
-  scheduler_tick();
-  delay(80);
 }
+
 
 // ---- app subsystem ----
 // registered apps
 app_t apps[] = {
-  { "Clock", APP_CLOSED, false, clock_app_run, clock_app_bg, clock_app_cleanup, "" },
-  { "FetOS Heart", APP_CLOSED, false, fetOSHeart_app_fg, fetOSHeart_app_bg, fetOSHeart_app_cleanup, "" }
+  { "Clock", APP_CLOSED, false, clock_app_run, clock_app_bg, clock_app_fg, clock_app_cleanup, "" },
+  { "FetOS Heart", APP_CLOSED, false, fetOSHeart_app_run, fetOSHeart_app_bg, fetOSHeart_app_fg, fetOSHeart_app_cleanup, "" },
+  { "Status", APP_CLOSED, false, status_app_run, status_app_bg, status_app_fg, status_app_cleanup, "" }
 };
-
 const uint8_t APP_COUNT = sizeof(apps) / sizeof(apps[0]);
-
-// ---- app management functions ----
+bool cleanup_pending[APP_COUNT] = { false };
 void app_play(uint8_t idx) {
   app_t *a = &apps[idx];
   a->state = APP_RUNNING;
 }
-
 void app_suspend(uint8_t idx) {
   app_t *a = &apps[idx];
-  if (a->state == APP_RUNNING) {  // Só permite suspender se estiver em execução
+  if (a->state == APP_RUNNING) {
     a->state = APP_SUSPENDED;
   } else {
     Serial.println("Erro: Não é possível suspender um aplicativo fechado!");
   }
 }
-
 void app_close(uint8_t idx) {
   app_t *a = &apps[idx];
+
+  // muda estado lógico
   if (a->state != APP_CLOSED) {
     a->state = APP_CLOSED;
-    a->is_visible = false;
-    if (a->cleanup) a->cleanup();
+    cleanup_pending[idx] = true;
   }
+
+  // limpa flags de visibilidade e execução
+  a->is_visible = false;
+  if (visible_app == idx) visible_app = -1;
+  if (active_app == idx) active_app = -1;
+
+  // limpa cache e força menu imediato
+  lcd_clear();
+  prev_line1[0] = '\0';
+  prev_line2[0] = '\0';
+  render_menu();
 }
 
 
@@ -197,46 +216,82 @@ void app_minimize(uint8_t idx) {
   app_t *a = &apps[idx];
   a->is_visible = false;
   visible_app = -1;
+  active_app = -1;
+
+  lcd_clear();
   render_menu();
 }
 
-
 void app_show(uint8_t idx) {
-  for (uint8_t i = 0; i < APP_COUNT; ++i) {
+  for (uint8_t i = 0; i < APP_COUNT; ++i)
     apps[i].is_visible = false;
-  }
+
   apps[idx].is_visible = true;
   visible_app = idx;
+  active_app = idx;  // opcional: dá foco
+
+  lcd_clear();
+  render_header_for_app(idx);
+  if (apps[idx].fg) apps[idx].fg();
 }
 
 
-// ---- scheduler ----
+// scheduler
 void scheduler_tick() {
+  static int8_t last_visible = -2;
+  bool anyActive = false;
   bool anyVisible = false;
 
+  // --- 1. Execução lógica (apps RUNNING) ---
   for (uint8_t i = 0; i < APP_COUNT; ++i) {
     app_t *a = &apps[i];
-
-    switch (a->state) {
-      case APP_RUNNING:
-        if (a->bg) a->bg();
-        if (a->run) a->run();
-        if (a->is_visible && a->fg) {
-          a->fg();
-          anyVisible = true;
-        }
-        break;
-
-      case APP_SUSPENDED:
-        if (a->bg) a->bg();
-        break;
-
-      case APP_CLOSED:
-        break;
+    if (a->state == APP_RUNNING) {
+      if (a->bg) a->bg();
+      if (a->run) a->run();
+      anyActive = true;
     }
   }
 
-  if (!anyVisible) render_menu();
+  // --- 2. Redesenho de contexto (mudança de app visível) ---
+  if (visible_app != last_visible) {
+    lcd_clear();
+    prev_line1[0] = '\0';
+    prev_line2[0] = '\0';
+
+    if (visible_app >= 0 && apps[visible_app].fg) {
+      render_header(apps[visible_app].name);
+      apps[visible_app].fg();
+      anyVisible = true;
+    } else {
+      render_menu();
+    }
+
+    last_visible = visible_app;
+  }
+
+  // --- 3. Renderização contínua do app visível ---
+  if (visible_app >= 0) {
+    app_t *a = &apps[visible_app];
+    if (a->fg && a->is_visible) {
+      render_header(a->name);
+      a->fg();
+      anyVisible = true;
+    }
+  }
+
+  // --- 4. Fallback visual (menu) ---
+  // Renderiza o menu SOMENTE se nenhum app estiver visível
+  if (visible_app == -1 && !anyActive) {
+    render_menu();
+  }
+
+  // --- 5. Cleanup atrasado (apps encerrados) ---
+  for (uint8_t i = 0; i < APP_COUNT; ++i) {
+    if (cleanup_pending[i]) {
+      if (apps[i].cleanup) apps[i].cleanup();
+      cleanup_pending[i] = false;
+    }
+  }
 }
 
 
@@ -304,7 +359,7 @@ void lcd_print(const char *str) {
 
 void lcd_pwm_init() {
   pinMode(LCD_CONTRASTE, OUTPUT);
-  analogWrite(LCD_CONTRASTE, 100);
+  analogWrite(LCD_CONTRASTE, 60);
   pinMode(LCD_BACKLIGHT, OUTPUT);
   analogWrite(LCD_BACKLIGHT, 120);
 }
@@ -332,15 +387,26 @@ void icons_reload() {
   lcd_create_char(3, ICON_STOP);
 }
 
+void lcd_draw_line1(const char *line1) {
+  lcd_draw_lines(line1, NULL);
+}
+
+void lcd_draw_line2(const char *line2) {
+  lcd_draw_lines(NULL, line2);
+}
+
 void lcd_draw_lines(const char *line1, const char *line2) {
-  if (strncmp(prev_line1, line1, 16) != 0) {
+  // Linha 1
+  if (line1 && strncmp(prev_line1, line1, 16) != 0) {
     lcd_set_cursor(0, 0);
     lcd_print(line1);
     for (int i = strlen(line1); i < 16; ++i) lcd_print(" ");
     strncpy(prev_line1, line1, 16);
     prev_line1[16] = '\0';
   }
-  if (strncmp(prev_line2, line2, 16) != 0) {
+
+  // Linha 2
+  if (line2 && strncmp(prev_line2, line2, 16) != 0) {
     lcd_set_cursor(0, 1);
     lcd_print(line2);
     for (int i = strlen(line2); i < 16; ++i) lcd_print(" ");
@@ -348,6 +414,7 @@ void lcd_draw_lines(const char *line1, const char *line2) {
     prev_line2[16] = '\0';
   }
 }
+
 
 //// ---- FetOS UI ---- #section
 // ---- Ícones de estado ----
@@ -364,24 +431,48 @@ char state_icon(app_state_t s) {
 void render_menu() {
   char line1[17], line2[17];
 
-  // Linha 1: título + posição
   snprintf(line1, 17, "FetOS Menu %d/%d", menu_index + 1, APP_COUNT);
-  lcd_draw_lines(line1, "");  // limpa só a linha 1
+  lcd_draw_lines(line1, "");
 
-  // Linha 2: [status] nome do app
   lcd_set_cursor(0, 1);
   lcd_print("[");
-  lcd_send(state_icon(apps[menu_index].state), 1);  // ícone custom direto
+  lcd_send(state_icon(apps[menu_index].state), 1);
   lcd_print("]");
   lcd_print(apps[menu_index].name);
 
-  // Preencher o restante da linha
-  int len = 3 + strlen(apps[menu_index].name);  // [X] + nome
+  int len = 3 + strlen(apps[menu_index].name);
   for (int i = len; i < 16; ++i) lcd_print(" ");
 }
 
+void render_header_for_app(uint8_t idx, bool forceRedraw = false) {
+  app_t *a = &apps[idx];
+  char line1[17];
+
+  char icon = state_icon(a->state);
+
+  // Monta linha 1
+  int name_len = strlen(a->name);
+  int spaces = 15 - name_len; // reserva 1 para o ícone
+  if (spaces < 1) spaces = 1;
+  snprintf(line1, 17, "%s%*s", a->name, spaces, "");
+
+  // Se for forçado, escreve tudo direto
+  if (forceRedraw) {
+    lcd_set_cursor(0, 0);
+    lcd_print(line1);
+    lcd_set_cursor(15, 0);
+    lcd_send(icon, 1);
+  } else {
+    // Usa cache: redesenha só se mudou
+    lcd_draw_lines(line1, NULL);
+    lcd_set_cursor(15, 0);
+    lcd_send(icon, 1);
+  }
+}
+
+
 // ---- Render de app ativo ----
-void render_status_bar_for_app(uint8_t idx) {
+void render_status_bar_for_showing_app(uint8_t idx) {
   app_t *a = &apps[idx];
   char line1[17];
 
@@ -393,29 +484,52 @@ void render_status_bar_for_app(uint8_t idx) {
     default: icon = '?';
   }
 
-  // Limpar linha 1 antes de escrever
+  // Limpa a linha 1
   lcd_set_cursor(0, 0);
   for (int i = 0; i < 16; ++i) lcd_print(" ");
 
-  // Construir linha 1: "Nome do app      posição/ícone"
+  // Nome do app alinhado à esquerda, ícone à direita
   int name_len = strlen(a->name);
-  int right_len = 3;  // "X/Í"
-  int spaces = 16 - name_len - right_len;
-  if (spaces < 1) spaces = 1;  // garante pelo menos 1 espaço
+  int spaces = 15 - name_len; // 1 espaço reservado ao ícone
+  if (spaces < 1) spaces = 1;
   snprintf(line1, 17, "%s%*s", a->name, spaces, "");
 
   lcd_set_cursor(0, 0);
   lcd_print(line1);
 
-  // Posição no menu + ícone
-  lcd_set_cursor(16 - right_len, 0);
-  char pos_icon[3];
-  pos_icon[0] = '0' + (idx + 1);  // posição 1-based
-  pos_icon[1] = '/';
-  pos_icon[2] = '\0';
-  lcd_print(pos_icon);
-  lcd_send(icon, 1);  // ícone do status à direita
+  // Ícone de estado no canto direito
+  lcd_set_cursor(15, 0);
+  lcd_send(icon, 1);
 }
+
+
+void render_header(const char *title) {
+  app_t *a = NULL;
+
+  // Procura o app correspondente (opcional, só pra saber o estado)
+  for (uint8_t i = 0; i < APP_COUNT; ++i) {
+    if (strcmp(apps[i].name, title) == 0) {
+      a = &apps[i];
+      break;
+    }
+  }
+
+  char line1[17];
+  char icon = (a) ? state_icon(a->state) : 210;  // ícone de estado ou 'メ'
+
+  // Monta a linha: Nome + ícone à direita
+  int name_len = strlen(title);
+  int right_len = 2;  // espaço + ícone
+  int spaces = 16 - name_len - right_len;
+  if (spaces < 1) spaces = 1;
+  snprintf(line1, 17, "%s%*s", title, spaces, "");
+
+  // Escreve linha 1
+  lcd_draw_lines(line1, NULL);
+  lcd_set_cursor(15, 0);
+  lcd_send(icon, 1);  // desenha o ícone à direita
+}
+
 
 //// ---- FetOS IO ----
 // ---- Serial Support ----
@@ -423,107 +537,144 @@ void handle_serial_char(char c) {
   if (active_app == -1) {
     // MENU
     if (c == 'd') {
-      menu_index = (menu_index - 1 + APP_COUNT) % APP_COUNT;
-      render_menu();
-    } else if (c == 'a') {
       menu_index = (menu_index + 1) % APP_COUNT;
       render_menu();
+    } else if (c == 'a') {
+      menu_index = (menu_index - 1 + APP_COUNT) % APP_COUNT;
+      render_menu();
     } else if (c == 'w') {
-      // abrir app (apenas torna visível, sem alterar estado)
-      app_t *a = &apps[menu_index];
+      // abrir app (só torna visível, não executa ainda)
       app_show(menu_index);
       active_app = menu_index;
-      // limpa a linha 2 imediatamente
-      lcd_set_cursor(0, 1);
-      for (int i = 0; i < 16; ++i) lcd_print(" ");
-      prev_line1[0] = '\0';
-      prev_line2[0] = '\0';
+      lcd_clear();
+      render_header_for_app(menu_index, true);  // ✅ força redraw total
     }
   } else {
     // DENTRO DO APP
     switch (c) {
-      case 'e':  // resume
+      case 'e':  // play / resume
         app_play(active_app);
+        render_header_for_app(active_app, true);  // ✅ atualiza header
         break;
+
       case 'q':  // pause
         app_suspend(active_app);
+        render_header_for_app(active_app, true);  // ✅ idem
         break;
+
       case 'x':  // close
         app_close(active_app);
-        // Forçar atualização da interface para refletir o estado APP_CLOSED
-        render_status_bar_for_app(active_app);
-        lcd_draw_lines(prev_line1, apps[active_app].last_status);
         break;
+
       case 's':  // minimize
         app_minimize(active_app);
         break;
-      case 'w':  // show again
+
+      case 'w':  // reabrir
         app_show(active_app);
+        render_header_for_app(active_app, true);  // ✅ idem
         break;
     }
   }
 }
 
+
+
 //// ---- FetOS Apps ---- #section
 // ---- Clock App ----
 typedef struct {
-  unsigned long uptime_secs;  // segundos desde o início
+  unsigned long uptime_secs;
 } clock_state_t;
 
 clock_state_t clock_internal = { 0 };
-
-void clock_app_run() {
-  app_t *a = &apps[0];  // Clock app
-
-  // Atualiza a linha 2 com uptime
-  snprintf(a->last_status, 17, "Uptime: %lus", clock_internal.uptime_secs);
-
-  // Apenas desenha no LCD
-  lcd_draw_lines(prev_line1, a->last_status);
-}
 
 void clock_app_bg() {
   unsigned long now = millis();
   clock_internal.uptime_secs = (now - system_start_ms) / 1000UL;
 }
 
+void clock_app_run() {
+  // poderia fazer algo adicional quando o app está ativo
+  // (p. ex. ler sensores, atualizar outras métricas)
+}
+
+void clock_app_fg() {
+  app_t *a = &apps[0];
+  snprintf(a->last_status, 17, "Uptime: %lus", clock_internal.uptime_secs);
+  lcd_draw_lines(NULL, a->last_status);
+}
+
 void clock_app_cleanup() {
   apps[0].last_status[0] = '\0';
 }
 
+
 // ---- FetOS Heart App ----
 typedef struct {
-  bool led_state;             // estado atual do LED
-  unsigned long last_toggle;  // última vez que o LED mudou
+  bool led_state;
+  unsigned long last_toggle;
 } fetOSHeart_state_t;
 
 fetOSHeart_state_t fetOSHeart_internal = { false, 0 };
-static bool fetOSHeart_led_state = false;
-
-void fetOSHeart_app_fg() {
-  app_t *a = &apps[1];  // FetOS Heart app
-
-  // Atualiza a linha 2 com o estado atual do LED
-  snprintf(a->last_status, 17, "%s", fetOSHeart_internal.led_state ? "LED: ON" : "LED: OFF");
-
-  // Apenas desenha no LCD
-  lcd_draw_lines(prev_line1, a->last_status);
-}
 
 void fetOSHeart_app_bg() {
-  app_t *a = &apps[1];
-  if (a->state != APP_RUNNING) return;  // só roda quando RUNNING
   unsigned long now = millis();
-  if (now - fetOSHeart_internal.last_toggle >= 500) {  // pisca a cada 500ms
+  if (now - fetOSHeart_internal.last_toggle >= 500) {
     fetOSHeart_internal.last_toggle = now;
     fetOSHeart_internal.led_state = !fetOSHeart_internal.led_state;
-    // Atualiza o pino físico do LED
     digitalWrite(LED_PIN, fetOSHeart_internal.led_state ? HIGH : LOW);
   }
 }
 
+void fetOSHeart_app_run() {
+  // poderíamos colocar lógica adicional aqui (ex: comunicação heartbeat)
+}
+
+void fetOSHeart_app_fg() {
+  app_t *a = &apps[1];
+  snprintf(a->last_status, 17, "%s", fetOSHeart_internal.led_state ? "LED: ON" : "LED: OFF");
+  lcd_draw_lines(prev_line1, a->last_status);
+}
+
 void fetOSHeart_app_cleanup() {
-  fetOSHeart_led_state = false;
+  fetOSHeart_internal.led_state = false;
   digitalWrite(LED_PIN, LOW);
   apps[1].last_status[0] = '\0';
+}
+
+typedef struct {
+  uint8_t selected_index;
+} status_app_state_t;
+
+status_app_state_t status_internal = { 0 };
+
+void status_app_bg() {
+  // nada necessário
+}
+
+void status_app_run() {
+  // nada necessário, bg ou fg fazem a atualização visual
+}
+
+void status_app_fg() {
+  char line2[17];
+  snprintf(line2, 17, "[%c]%s",
+           state_icon(apps[status_internal.selected_index].state),
+           apps[status_internal.selected_index].name);
+  lcd_draw_lines(NULL, line2);  // linha1 intacta
+}
+
+void status_app_cleanup() {
+  // opcional: limpa linha2
+  lcd_draw_lines(NULL, "                ");
+}
+
+// handle_serial dentro do Status App
+void status_handle_input(char c) {
+  if (c == 'd') {
+    status_internal.selected_index = (status_internal.selected_index + 1) % APP_COUNT;
+  } else if (c == 'a') {
+    status_internal.selected_index = (status_internal.selected_index - 1 + APP_COUNT) % APP_COUNT;
+  }
+  status_app_fg();  // redesenha
 }
