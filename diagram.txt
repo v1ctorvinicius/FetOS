@@ -1,0 +1,131 @@
+┌──────────────────────────────────────────────────────────────────┐
+│                         🧠 F e t O S                             │
+│               Sistema operacional para microcontroladores        │
+│         Minimalista • Offline • Modular • Distribuído            │
+└──────────────────────────────────────────────────────────────────┘
+
+
+                     ┌─────────────────────────────┐
+                     │         Usuário              │
+                     │ ──────────────────────────── │
+                     │ Botões  •  LEDs  •  LCD 1602A│
+                     │ Interage com menus, apps e UI │
+                     └────────────┬──────────────────┘
+                                  │ eventos (input)
+                                  ▼
+
+═══════════════════════════════════════════════════════════════════════
+             🔧 CAMADA DE APLICAÇÃO (Apps & UI)
+═══════════════════════════════════════════════════════════════════════
+│
+│  ┌────────────────────────────────────────────────────────────┐
+│  │                      Aplicativos                           │
+│  │────────────────────────────────────────────────────────────│
+│  │  🕓 app_clock       → mostra hora/uptime                    │
+│  │  🧩 app_system      → infos de RAM, flash, versão            │
+│  │  💡 app_ledtest     → pisca LEDs com padrões                 │
+│  │  ⌨️ app_buttonmon   → mostra estado dos botões              │
+│  │  🗒 app_logview      → visualiza logs                        │
+│  │  ℹ️ app_about        → créditos/version info                 │
+│  └────────────────────────────────────────────────────────────┘
+│
+│ Cada app é uma função registrada em `app_registry`
+│ e chamada conforme o app ativo no menu.
+│
+│ Funções comuns a todos os apps:
+│  - onInit()
+│  - onEvent(event)
+│  - onRender(display)
+│
+│ Output → LCD (via driver)
+│ Input  → eventos de botões/timers
+│
+│  Fluxo:
+│    [input event] → [app handler] → [render text → LCD buffer]
+│
+═══════════════════════════════════════════════════════════════════════
+             ⚙️ CAMADA DE SISTEMA (Kernel & Infra)
+═══════════════════════════════════════════════════════════════════════
+│
+│  ┌────────────────────────────────────────────────────────────┐
+│  │                          Kernel                            │
+│  │────────────────────────────────────────────────────────────│
+│  │  🔄 Main Loop         → ciclo infinito                     │
+│  │  🧵 Task Scheduler    → executa tarefas cooperativas        │
+│  │  ⏱ Timer/Clock        → interrupção de tempo (1Hz)          │
+│  │  🪝 Event Dispatcher  → distribui eventos                   │
+│  │  📦 State Manager     → variáveis persistentes (RAM/EEPROM) │
+│  │  🧩 App Manager       → alterna apps ativos                 │
+│  └────────────────────────────────────────────────────────────┘
+│
+│  🔸 O kernel é *agnóstico de hardware*: só fala com a HAL.
+│  🔸 O ciclo é previsível e não-preemptivo (baixo consumo).
+│  🔸 Base de todo o multitasking do FetOS.
+│
+│
+═══════════════════════════════════════════════════════════════════════
+             🧩 CAMADA DE ABSTRAÇÃO DE HARDWARE (HAL)
+═══════════════════════════════════════════════════════════════════════
+│
+│  ┌────────────────────────────────────────────────────────────┐
+│  │                           HAL                              │
+│  │────────────────────────────────────────────────────────────│
+│  │  📺 LCD Driver (1602A) → init, clear, print, cursor         │
+│  │  🔘 Buttons Driver     → leitura e debounce                 │
+│  │  💡 LED Driver         → liga/desliga LEDs de status        │
+│  │  ⏱ Timer Driver        → interrupções periódicas            │
+│  │  💾 EEPROM Driver      → armazenamento simples              │
+│  │  ⚡ GPIO Utils          → acesso genérico a pinos            │
+│  └────────────────────────────────────────────────────────────┘
+│
+│  🔸 Interface padronizada para o Kernel.
+│  🔸 Pode ser portada para outro MCU sem mudar o Kernel.
+│
+│  Exemplo:
+│    lcd_print("FetOS Booting...")
+│    button_read(BTN_UP)
+│
+│
+═══════════════════════════════════════════════════════════════════════
+             💾 CAMADA DE HARDWARE FÍSICO
+═══════════════════════════════════════════════════════════════════════
+│
+│  ┌────────────────────────────────────────────────────────────┐
+│  │                       Hardware                            │
+│  │────────────────────────────────────────────────────────────│
+│  │  MCU AVR / ATmega328 / ATtiny / ESP / RP2040               │
+│  │  LCD 1602A (modo texto 2x16)                              │
+│  │  Botões (GPIO pull-down/up)                                │
+│  │  LEDs (GPIO output)                                        │
+│  │  EEPROM (interna ou externa)                               │
+│  │  Fonte 5V / 3.3V                                           │
+│  └────────────────────────────────────────────────────────────┘
+│
+│  🔸 Futuras expansões:
+│      - OLED display (modo gráfico)
+│      - SD card (FS real)
+│      - RTC externo
+│      - Módulos I2C/SPI (sensores, rede, etc)
+│
+│
+═══════════════════════════════════════════════════════════════════════
+             🧰 FERRAMENTAS DE DESENVOLVIMENTO (externas)
+═══════════════════════════════════════════════════════════════════════
+│
+│  💻 Simulador Python do LCD e botões (debug rápido)
+│  🧩 Loader UART (upload fácil de firmware)
+│  🔍 Serial Log Viewer (CLI de debug)
+│  🧠 Config Builder (gera defines automáticos p/ build)
+│
+│
+═══════════════════════════════════════════════════════════════════════
+             🌐 FUTURO (quando tiver mais hardware)
+═══════════════════════════════════════════════════════════════════════
+│
+│  🔌 Rede distribuída FetNet (comunicação P2P)
+│  📡 IoT universal (sensores plugáveis)
+│  💾 SD Filesystem (apps carregáveis externamente)
+│  🌈 OLED UI híbrida (modo texto + gráfico)
+│  🔋 Power manager (sleep / wake / eventos externos)
+│
+└──────────────────────────────────────────────────────────────────────┘
