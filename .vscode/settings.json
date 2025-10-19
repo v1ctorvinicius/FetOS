@@ -1,0 +1,6 @@
+{
+  "C_Cpp.default.compilerPath": "c:\\Users\\victo\\workspace\\avr-toolchain\\avr8-gnu-toolchain-win32_x86_64\\bin\\avr-gcc.exe",
+  "files.associations": {
+    "fetos_lcd.h": "c"
+  }
+}
