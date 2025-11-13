@@ -1,61 +1,79 @@
-/Debug/
-/Release/
-/build/
-/dist/
-/out/
-/obj/
-/tmp/
-/*.elf
-/*.hex
-/*.eep
-/*.map
-/*.lss
-/*.bin
-/*.lst
-/*.o
-/*.a
+# ============================================================
+# 🧠 FETOS / FETHUB MONOREPO
+# ============================================================
 
-*.atsln
-*.cproj
-*.componentinfo.xml
-*.atsuo
-*.atsln.user
-*.dep
+# === Build artefacts (C / AVR)
+build/
+out/
+dist/
+obj/
+Debug/
+Release/
+*.elf
+*.hex
+*.eep
+*.map
+*.lss
+*.bin
+*.lst
+*.o
+*.a
 *.d
-*.pdb
 
+# === Scripts temporários / batch
+# build-fetos.bat
+# flash-fetos.bat
+# upload-*.bat
+# test-*.bat
+
+# === Logs / backups
 *.log
 *.bak
 *.tmp
 *.swp
 *.swo
 *.orig
+/tmp/
+/logs/
+/backups/
+/notes/
 
+# === Python (FetHub)
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
-/.venv/
-/venv/
+.venv/
+venv/
 .env
 .env.*
+.ipynb_checkpoints/
+*.ipynb
 
-.DS_Store
-Thumbs.db
+# === IDE / Editor configs
+.vscode/
+.idea/
+*.code-workspace
 *.user
 *.suo
-*.vscode/
-*.idea/
-*.code-workspace
+*.atsln
+*.cproj
+*.componentinfo.xml
+*.atsuo
+*.dep
+*.pdb
 
-build-fetos.bat
-flash-fetos.bat
-upload-*.bat
-test-*.bat
+# === Sistema
+.DS_Store
+Thumbs.db
 
-*.ipynb
-.ipynb_checkpoints/
+# === Outros
+*.atsln.user
 
-/notes/
-/backups/
-/logs/
+# ============================================================
+# Diretórios do projeto (não ignorar)
+# ============================================================
+!fetos/
+!fethub/
+!tools/
+!docs/
