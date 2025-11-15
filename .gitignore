@@ -69,6 +69,7 @@ Thumbs.db
 
 # === Outros
 *.atsln.user
+fethub.egg-info
 
 # ============================================================
 # Diretórios do projeto (não ignorar)

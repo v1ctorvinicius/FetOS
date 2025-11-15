@@ -1,15 +1,12 @@
 #!/usr/bin/env bash
-# build_fetos.sh
 set -euo pipefail
 
 # ===========================================
-#  ⚙️  CONFIGURAÇÕES DO PROJETO
+# ⚙️ CONFIGURAÇÕES DO PROJETO
 # ===========================================
-PORT="/dev/ttyACM0"
 MCU="atmega328p"
-F_CPU=16000000UL
 PROGRAMMER="arduino"
-BAUD="115200"
+F_CPU=16000000UL
 TARGET="FetOS"
 
 ROOT_DIR="$(dirname "$(realpath "$0")")"
@@ -18,20 +15,18 @@ ELF="$BUILD_DIR/$TARGET.elf"
 HEX="$BUILD_DIR/$TARGET.hex"
 
 # ===========================================
-#  🧩 FUNÇÕES AUXILIARES
+# 🎨 Helpers
 # ===========================================
-msg() { echo -e "\033[1;36m$1\033[0m"; }
+msg() { echo -e "\033[1;34m$1\033[0m"; }
 ok()  { echo -e "\033[1;32m$1\033[0m"; }
 err() { echo -e "\033[1;31m$1\033[0m" >&2; }
 
+# ===========================================
+# 🔍 Utilitários
+# ===========================================
 check_tool() {
     if ! command -v "$1" &>/dev/null; then
-        err "❌ Ferramenta '$1' não encontrada. Instale antes de continuar."
-        case "$(grep -oP '^ID=\K\w+' /etc/os-release)" in
-            arch|garuda|manjaro) echo "→ sudo pacman -S avr-gcc avr-libc avrdude" ;;
-            ubuntu|debian)       echo "→ sudo apt install gcc-avr avr-libc avrdude" ;;
-            *)                   echo "→ Instale manualmente o pacote AVR toolchain." ;;
-        esac
+        err "❌ '$1' não encontrado."
         exit 1
     fi
 }
@@ -43,25 +38,14 @@ detect_port() {
     echo "$port"
 }
 
-ensure_serial_access() {
-    local port="$1"
-    if [[ ! -r "$port" || ! -w "$port" ]]; then
-        sudo chmod a+rw "$port" && ok "✅ Permissão concedida temporariamente."
-    fi
-}
-
 # ===========================================
-#  🔧 COMPILAÇÃO
+# 🔧 Compilação
 # ===========================================
 msg "\n==========================================="
 msg "  🔧 COMPILANDO $TARGET"
 msg "==========================================="
 
-check_tool avr-gcc
-check_tool avr-objcopy
-check_tool avr-size
-check_tool avrdude
-
+for tool in avr-gcc avr-objcopy avr-size avrdude; do check_tool "$tool"; done
 mkdir -p "$BUILD_DIR"
 
 echo
@@ -90,37 +74,49 @@ ok "\n✅ Compilação concluída."
 msg "==========================================="
 
 # ===========================================
-#  🚀 GRAVAÇÃO / SERIAL / SIMULADOR
+# 🚀 Gravação
 # ===========================================
 if [[ "${1:-}" == "--flash" || "${1:-}" == "--serial" ]]; then
     msg "\n==========================================="
     msg "  🚀 GRAVANDO NO ARDUINO"
     msg "==========================================="
-    PORT=$(detect_port)
-    ensure_serial_access "$PORT"
-    ok "📡 Porta detectada: $PORT"
-    avrdude -c $PROGRAMMER -p $MCU -P "$PORT" -b $BAUD -U flash:w:"$HEX":i
-    ok "✅ Gravação concluída!"
 
+    PORT=$(detect_port)
+    ok "📡 Porta detectada: $PORT"
+
+    avrdude -c $PROGRAMMER -p $MCU -P "$PORT" -b 115200 -U flash:w:"$HEX":i
+    ok "✅ Gravação concluída!"
+    sleep 1
+
+    # =======================================
+    # 🔎 AUTO-DETECÇÃO DE BAUD
+    # =======================================
     if [[ "${1:-}" == "--serial" ]]; then
         msg "\n==========================================="
-        msg "  🖥️  MONITOR SERIAL (Ctrl+C pra sair)"
+        msg "  🧠 AUTO-DETECÇÃO DE BAUD"
         msg "==========================================="
-        sleep 2
-        sudo stty -F "$PORT" $BAUD raw -echo
-        sudo cat "$PORT"
-        exit 0
+
+        for baud in 115200 57600 38400 19200 9600; do
+            stty -F "$PORT" $baud raw -echo
+            echo > "$PORT" || true
+            line=$(timeout 1 cat "$PORT" | grep -m1 "\[INFO\]" || true)
+            if [[ "$line" == *"BAUD="* ]]; then
+                ok "✅ Baud detectado automaticamente: $baud"
+                DETECTED_BAUD=$baud
+                break
+            fi
+        done
+
+        DETECTED_BAUD="${DETECTED_BAUD:-115200}"
+        msg "\n==========================================="
+        msg "  🖥️ MONITOR SERIAL  (${DETECTED_BAUD} baud)"
+        msg "==========================================="
+        sleep 1
+
+        stty -F "$PORT" $DETECTED_BAUD raw -echo
+        cat "$PORT" | awk '
+            /\[FetLink\]/ {print "\033[1;33m" $0 "\033[0m"; next}
+            /\{.*\}/     {print "\033[1;36m" $0 "\033[0m"; next}
+            {print $0}'
     fi
 fi
-
-msg "\n==========================================="
-msg "  🧠 Iniciando FetOS Hub (simulador)"
-msg "==========================================="
-if [[ -f "$ROOT_DIR/../fethub/fethub.py" ]]; then
-    python3 -m fethub.fethub "$PORT"
-else
-    err "⚠️  Arquivo fethub.py não encontrado — pulando etapa de simulação."
-fi
-
-ok "\n✅ Processo completo!"
-msg "==========================================="

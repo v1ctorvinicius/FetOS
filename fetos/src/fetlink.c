@@ -1,7 +1,9 @@
+// fetlink.c
 #include <avr/io.h>
 #include <util/delay.h>
 #include <stdio.h>
 #include "fetlink.h"
+#include "timer0.h"
 
 #ifndef F_CPU
 #define F_CPU 16000000UL
@@ -15,9 +17,9 @@ typedef struct {
 
 static const UartConfig uart_presets[] = {
     // ---- Clones LGT8F e Unos genéricos ----
-    {16000000UL, 115200, 1}, // LGT8F clone com CKDIV8 ativo (tua placa)
+    {16000000UL, 115200, 1}, // LGT8F clone com CKDIV8 ativo
     {32000000UL, 115200, 1}, // LGT8F full clock 32MHz
-    {16000000UL, 9600,   0}, // Uno / Nano genuíno
+    {16000000UL, 9600,   0}, // Uno / Nano
     {8000000UL,  9600,   1}, // Pro Mini low-power
     {16000000UL, 57600,  1}, // fallback baud
 };
@@ -40,19 +42,11 @@ static void uart_init(const UartConfig* cfg) {
     UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
 }
 
-static void fetlink_send_test(void) {
-    uart_print("\r\n[FetLink] TEST\r\n");
-}
-
-// ===================================================
-//  Auto-detecção de configuração UART
-// ===================================================
 static const UartConfig* fetlink_autobaud(void) {
     _delay_ms(1500); // tempo pro CDC/CH340 estabilizar
     for (uint8_t i = 0; i < sizeof(uart_presets)/sizeof(UartConfig); i++) {
         const UartConfig* cfg = &uart_presets[i];
         uart_init(cfg);
-        fetlink_send_test();
         _delay_ms(50);
         // (futuramente: validar eco via RX)
         return cfg; // por enquanto pega o primeiro válido
@@ -60,25 +54,37 @@ static const UartConfig* fetlink_autobaud(void) {
     return &uart_presets[0];
 }
 
-// ===================================================
-//  API pública
-// ===================================================
+static void send_json(const char *json) {
+    uart_putc(0x02);       // STX
+    uart_print(json);
+    uart_putc(0x03);       // ETX
+    uart_putc('\n');       // newline final
+}
+
 void fetlink_init(void) {
     const UartConfig* cfg = fetlink_autobaud();
 
-    uart_print("[FetLink] READY\r\n");
-    uart_print("[INFO] ");
-    char info[64];
-    snprintf(info, sizeof(info),
-             "CPU=%luHz, BAUD=%lu, U2X=%d\r\n",
-             cfg->f_cpu, cfg->baud, cfg->u2x);
-    uart_print(info);
+    send_json(
+        "{\"src\":\"fetos:uno\","
+        "\"cmd\":\"sys.hello\","
+        "\"payload\":{\"ver\":\"0.5.0\"}}"
+    );
 }
 
+
 void fetlink_tick(void) {
-    static uint16_t tick_counter = 0;
-    if (++tick_counter >= 4) {
-        tick_counter = 0;
-        uart_print("\x02{\"src\":\"fetos:uno\",\"cmd\":\"TEXT\",\"payload\":{\"x\":0,\"y\":0,\"text\":\"TICK\"}}\x03\n");
+    static uint32_t last = 0;
+    uint32_t now = millis();
+
+    if (now - last >= 200) {
+        last = now;
+
+        send_json(
+            "{\"src\":\"fetos:uno\","
+            "\"cmd\":\"ui.text\","
+            "\"dst\":\"tv:OLED_SIM\","
+            "\"payload\":{\"x\":0,\"y\":0,\"text\":\"TICK\"}}"
+        );
     }
 }
+
