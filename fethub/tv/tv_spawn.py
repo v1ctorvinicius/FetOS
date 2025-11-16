@@ -1,25 +1,18 @@
 # fethub/tv/tv_spawn.py
-import multiprocessing
-from multiprocessing import Queue
+
+from multiprocessing import Process, Queue
 from fethub.tv.tv_process import tv_process_main
 
-
-def spawn_tv_process(tv_manager, tv_type: str, tv_id: str, **kwargs):
-
+def spawn_tv_process(tv_manager, tv_type, tv_id, **kwargs):
     inst_name = tv_manager.create_instance(tv_type, tv_id, **kwargs)
-    alias = f"tv:{tv_id}"
 
-    queue = Queue()
-
-    proc = multiprocessing.Process(
+    q = Queue()
+    p = Process(
         target=tv_process_main,
-        args=(tv_type, alias, kwargs, queue),
-        daemon=False   # ❗ NUNCA DEIXAR DAEMON AQUI
+        args=(tv_type, tv_id, kwargs, q),
+        daemon=False,
     )
+    p.start()
 
-    proc.start()
-
-    tv_manager.register_process(inst_name, proc, queue)
-
-    print(f"[TVPROC] Processo iniciado para {tv_type}:{tv_id} (pid={proc.pid})")
-    return inst_name
+    tv_manager.register_process(inst_name, q, p)
+    print(f"[TVPROC] Processo iniciado para {tv_type}:{tv_id} (pid={p.pid})")

@@ -1,93 +1,104 @@
-from datetime import datetime
-import os
-
-def now_ts():
-    return datetime.now().strftime("%H:%M:%S.%f")[:-3]
-
+# fethub/core/tv_manager.py
+import threading
+import time
 
 class TVManager:
-    def __init__(self, verbose=True):
-        self.verbose = verbose
+    def __init__(self):
+        self.instances = {}   # inst_name -> { "type": ..., "alias": ..., "kwargs": ... }
+        self.queues = {}      # inst_name -> Queue
+        self.proc = {}        # inst_name -> Process
+        self.alias = {}       # "tv:OLED_SIM" -> "oled#1"
+        self.lock = threading.Lock()
 
-        # tipos → ctor
-        self.factories = {}
+    # -----------------------------
+    # INSTANCIAMENTO
+    # -----------------------------
+    def create_instance(self, tv_type: str, tv_id: str, **kwargs):
+        """
+        Cria registro da instância de TV antes do spawn real.
+        Retorna nome interno: ex: oled#1
+        """
+        with self.lock:
+            # descobrir próximo número
+            count = sum(1 for i in self.instances.values() if i["type"] == tv_type)
+            inst_name = f"{tv_type}#{count+1}"
 
-        # contadores
-        self.count = {}
+            self.instances[inst_name] = {
+                "type": tv_type,
+                "alias": tv_id,
+                "kwargs": kwargs,
+            }
 
-        # metadados para subprocessos
-        self.kwargs = {}          # inst_name → kwargs usados na criação real
+            # registrar alias global
+            self.alias[tv_id] = inst_name
 
-        # processos
-        self.proc = {}
-        self.queues = {}
+            return inst_name
 
-        # alias usados pelo router
-        self.alias = {}
+    # chamado por tv_spawn depois que o processo é criado
+    def register_process(self, inst_name, queue, process):
+        with self.lock:
+            self.queues[inst_name] = queue
+            self.proc[inst_name] = process
 
-    # -------------------------------------------------------------
-    def register_type(self, tv_type, ctor):
-        self.factories[tv_type] = ctor
-        self.count[tv_type] = 0
-        if self.verbose:
-            print(f"[TV] Tipo registrado: {tv_type}")
+    # -----------------------------
+    # RESOLVER ALIAS
+    # -----------------------------
+    def resolve(self, dst: str):
+        """
+        Aceita:
+            - inst_name ("oled#1")
+            - alias ("tv:OLED_SIM")
+        Retorna inst_name normalizado ou None
+        """
+        if dst in self.instances:
+            return dst
+        if dst in self.alias:
+            return self.alias[dst]
+        return None
 
-    # -------------------------------------------------------------
-    def create_instance(self, tv_type, tv_id, **kwargs):
-        if tv_type not in self.factories:
-            raise KeyError(f"TV type '{tv_type}' não registrado")
+    # -----------------------------
+    # DESPACHO (comando interno)
+    # -----------------------------
+    def dispatch(self, inst_name, subcmd, payload, pkt=None):
+        """
+        Envia comando para processo TV já resolvido.
+        """
+        with self.lock:
+            if inst_name not in self.queues:
+                print(f"[TV] WARN: Sem queue para {inst_name}")
+                return
+            q = self.queues[inst_name]
 
-        self.count[tv_type] += 1
-        inst_name = f"{tv_type}#{self.count[tv_type]}"
+        msg = {"op": subcmd}
+        msg.update(payload)
+        q.put(msg)
 
-        # salva kwargs pro processo criar a TV real
-        self.kwargs[inst_name] = kwargs
+    # -----------------------------
+    # DESPACHO VIA CONSOLE
+    # -----------------------------
+    def dispatch_from_console(self, tv_id, subcmd, payload):
+        inst = self.resolve(tv_id)
+        if not inst:
+            raise ValueError(f"TV '{tv_id}' não encontrada")
 
-        # registra alias
-        self.alias[f"tv:{tv_id}"] = inst_name
+        self.dispatch(inst, subcmd, payload)
 
-        if self.verbose:
-            print(f"[TV][{now_ts()}] Instância registrada: {inst_name} (alias tv:{tv_id})")
-
-        return inst_name
-
-    # -------------------------------------------------------------
-    def register_process(self, inst_name, process, queue):
-        self.proc[inst_name] = process
-        self.queues[inst_name] = queue
-        if self.verbose:
-            print(f"[TV][{now_ts()}] Processo registrado para {inst_name}")
-
-    # -------------------------------------------------------------
-    def resolve(self, dst_alias):
-        return self.alias.get(dst_alias)
-
-    # -------------------------------------------------------------
-    def dispatch(self, dst_alias, subcmd, payload, pkt):
-        inst_name = self.resolve(dst_alias)
-        if not inst_name:
-            print(f"[TV] Alias desconhecido '{dst_alias}'")
-            return
-
-        q = self.queues.get(inst_name)
-        if not q:
-            print(f"[TV] Sem queue para {inst_name}")
-            return
-
-        q.put({
-            "op": subcmd,
-            **payload
-        })
-
+    # -----------------------------
+    # ENCERRAMENTO
+    # -----------------------------
     def stop_all(self):
-        for inst, proc in self.proc.items():
-            q = self.queues.get(inst)
-            if q:
-                q.put({"op": "__quit__"})  # notifica processo
+        with self.lock:
+            for inst_name, q in self.queues.items():
+                try:
+                    q.put({"op": "__quit__"})
+                except:
+                    pass
 
-            if proc.is_alive():
-                proc.join(timeout=1)
-
-            if proc.is_alive():
-                proc.terminate()
-
+            # matar processos
+            for inst_name, proc in self.proc.items():
+                try:
+                    proc.join(timeout=1)
+                    if proc.is_alive():
+                        proc.terminate()
+                except:
+                    pass

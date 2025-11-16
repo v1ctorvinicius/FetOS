@@ -45,7 +45,7 @@ def tv_process_main(tv_type: str, alias: str, kwargs: dict, queue: Queue):
                     tv.clear()
 
                 elif op == "text":
-                    tv.text(msg.get("x", 0), msg.get("y", 0), msg.get("text", ""))
+                    tv.text(msg.get("x", 0), msg.get("y", 0), msg.get("msg", ""))
 
                 elif op == "pixel":
                     tv.pixel(msg.get("x", 0), msg.get("y", 0), msg.get("v", 1))

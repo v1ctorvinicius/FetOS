@@ -1,54 +1,44 @@
-# fethub/tv/oled_ssd1306.py
 import pygame
 import sys
 import time
+import os
+from PIL import Image, ImageDraw, ImageFont
 
-# Pixel font 6x8 ultra simples (ASCII 32–127)
-FONT6x8 = [
-    # cada char é uma lista de 6 colunas, cada coluna é um byte vertical
-    # fonte minimalista – posso expandir depois
-]
-
-def make_font():
-    # Gera uma fonte dummy (pontos quadrados)
-    font = {}
-    for code in range(32, 128):
-        glyph = []
-        for _ in range(6):
-            glyph.append(0b11111111)  # bloco cheio temporário
-        font[chr(code)] = glyph
-    return font
-
-FONT = make_font()
-
+FONT_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "assets", "font", "dejavu-sans-mono.bold.ttf")
 
 class OLEDSSD1306:
     """
-    Simulador de display OLED SSD1306 128x64.
-    - 1 bit por pixel
-    - framebuffer 128x64
-    - update() redesenha tela
+    Simulador de display OLED SSD1306 128x64 com fonte TTF real.
     """
-
-    def __init__(self, width=128, height=64, zoom=4, title="OLED 128x64", **kwargs):
+    def __init__(self, width=128, height=64, zoom=4, title="OLED 128x64", font_size=10, **kwargs):
         self.WIDTH = width
         self.HEIGHT = height
         self.zoom = zoom
         self.title = title
 
         pygame.init()
-        self.surface = pygame.display.set_mode(
-            (self.WIDTH * zoom, self.HEIGHT * zoom)
-        )
-        print("OLED DISPLAY CREATED:", self.surface)
+        pygame.font.init()
 
+        self.surface = pygame.display.set_mode((self.WIDTH * zoom, self.HEIGHT * zoom))
         pygame.display.set_caption(self.title)
 
+        print("OLED DISPLAY CREATED:", self.surface)
+
+        # Framebuffer 1-bit
         self.fb = [[0 for _ in range(self.WIDTH)] for _ in range(self.HEIGHT)]
+
+        # Carrega fonte TTF com Pillow
+        try:
+            self.font = ImageFont.truetype(FONT_PATH, font_size)
+            print(f"[OLED] Fonte carregada: {FONT_PATH}")
+        except Exception as e:
+            print(f"[OLED] ERRO ao carregar fonte {FONT_PATH}: {e}")
+            sys.exit(1)
+
         self.clear()
 
     # ============================================================
-    # Cleanup
+    # Eventos
     # ============================================================
     def _process_events(self):
         for ev in pygame.event.get():
@@ -57,7 +47,7 @@ class OLEDSSD1306:
                 sys.exit(0)
 
     # ============================================================
-    # Métodos gráficos
+    # Framebuffer ops
     # ============================================================
     def clear(self):
         for y in range(self.HEIGHT):
@@ -70,29 +60,25 @@ class OLEDSSD1306:
             self.fb[y][x] = 1 if v else 0
 
     def rect(self, x, y, w, h, fill=1):
-        for yy in range(y, y + h):
-            for xx in range(x, x + w):
+        for yy in range(y, y+h):
+            for xx in range(x, x+w):
                 self.pixel(xx, yy, fill)
 
-    def text(self, x, y, text):
-        cx = x
-        cy = y
+    # ============================================================
+    # TEXTO COM TTF
+    # ============================================================
+    def text(self, x, y, msg):
+        # Cria imagem temporária 1-bit usando Pillow
+        img = Image.new("1", (self.WIDTH, self.HEIGHT), 0)
+        draw = ImageDraw.Draw(img)
 
-        for ch in text:
-            if ch not in FONT:
-                ch = "?"  # fallback
+        # Desenha texto usando a fonte TTF
+        draw.text((x, y), msg, fill=1, font=self.font)
 
-            glyph = FONT[ch]
-
-            for col_i, col_bits in enumerate(glyph):
-                for row in range(8):  # 8 pixels de altura
-                    bit = (col_bits >> row) & 1
-                    px = cx + col_i
-                    py = cy + row
-                    if 0 <= px < self.WIDTH and 0 <= py < self.HEIGHT:
-                        self.fb[py][px] = bit
-
-            cx += 6  # cada char ocupa 6px em largura
+        # Copia p/ framebuffer
+        for py in range(self.HEIGHT):
+            for px in range(self.WIDTH):
+                self.fb[py][px] = img.getpixel((px, py))
 
     # ============================================================
     # UPDATE

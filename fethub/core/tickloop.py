@@ -8,16 +8,28 @@ from fethub.core.tv_manager import TVManager
 from fethub.core.node_manager import NodeManager
 from fethub.core.packet_router import PacketRouter
 from fethub.ui.console import HubConsole
-from fethub.drivers.tv_registry import register_all_tv_types
 from fethub.ipc.hub_socket import HubSocket
 from fethub.tv.tv_spawn import spawn_tv_process
-
+import os
+from serial.tools import list_ports
 
 def now_ts():
     return datetime.now().strftime("%H:%M:%S.%f")[:-3]
 
 class FetHubCore:
-    def __init__(self, port="/dev/ttyACM0", baud=115200, verbose=True):
+    def __init__(self, port=None, baud=115200, verbose=True):
+        if port is None:
+            if os.name == "nt":
+                ports = [p.device for p in list_ports.comports()]
+                if len(ports) == 0:
+                    print("[WARN] Nenhuma porta COM encontrada. Usando COM3 por fallback.")
+                    port = "COM3"
+                else:
+                    print(f"[SYS] Portas encontradas: {ports}")
+                    port = ports[0]
+            else:
+                port = "/dev/ttyACM0"
+
         print(f"[SYS][{now_ts()}] FetHub iniciado")
 
         self.verbose = verbose
@@ -26,7 +38,6 @@ class FetHubCore:
         # Serial
         self.link = LinkManager(port=port, baud=baud, verbose=verbose)
         self.tv_manager = TVManager()
-        register_all_tv_types(self.tv_manager)
         self.node_manager = NodeManager(self.link, verbose=verbose)
         self.router = PacketRouter(
             tv_manager=self.tv_manager,
@@ -42,23 +53,58 @@ class FetHubCore:
 
         op = parts[0]
 
+        # -----------------------------------------
+        # HELP
+        # -----------------------------------------
         if op == "help":
-            return "Comandos: tv.list, ui.text <tv> <x> <y> <msg>, ui.clear <tv>"
+            return (
+                "Comandos disponíveis:\n"
+                "  tv.list\n"
+                "  ui.text <tv> <x> <y> <msg>\n"
+                "  ui.clear <tv>\n"
+            )
 
+        # -----------------------------------------
+        # LISTAR TVs
+        # -----------------------------------------
         if op == "tv.list":
             out = []
-            for tv_id in self.tv_manager.proc:
-                out.append(f"- {tv_id} (PID={self.tv_manager.proc[tv_id].pid})")
+            for tv_id, proc in self.tv_manager.proc.items():
+                out.append(f"- {tv_id} (PID={proc.pid})")
             return "\n".join(out)
 
-        # delega pro router
-        try:
-            self.router.console_command(parts)
+        # -----------------------------------------
+        # ui.clear <tv_id>
+        # -----------------------------------------
+        if op == "ui.clear":
+            if len(parts) < 2:
+                return "ERR: uso: ui.clear <tv>"
+            tv = parts[1]
+            self.tv_manager.dispatch_from_console(tv, "clear", {})
             return "ok"
-        except Exception as e:
-            return f"ERR: {e}"
 
-        return "?"
+        # -----------------------------------------
+        # ui.text <tv_id> <x> <y> <msg...>
+        # -----------------------------------------
+        if op == "ui.text":
+            if len(parts) < 5:
+                return "ERR: uso: ui.text <tv> <x> <y> <msg>"
+
+            tv = parts[1]
+            try:
+                x = int(parts[2])
+                y = int(parts[3])
+            except:
+                return "ERR: x e y devem ser inteiros"
+
+            msg = " ".join(parts[4:])
+
+            self.tv_manager.dispatch_from_console(tv, "text", {"x": x, "y": y, "msg": msg})
+
+            return "ok"
+
+        return f"ERR: Comando desconhecido: {op}"
+
 
     def run(self):
         print(f"[SYS][{now_ts()}] Loop principal iniciado")

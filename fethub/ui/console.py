@@ -1,6 +1,10 @@
 # fethub/core/console.py
 import json
-import readline
+try:
+    import readline
+except ImportError:
+    readline = None
+
 
 class HubConsole:
     """
