@@ -1,50 +1,138 @@
 //button.cpp
 #include "button.h"
 #include "event.h"
+#include <Arduino.h>
+#include "button_gesture.h"
 #include <stdlib.h>
+#include "scheduler.h"
+
+#define BOOT_IGNORE_MS 300
+
+static Device* button_dev = nullptr;
+
+static void button_task();
 
 void button_init(Device* dev) {
   pinMode(dev->pin, INPUT_PULLUP);
 
-  ButtonState* st = (ButtonState*)malloc(sizeof(ButtonState));
+  ButtonGestureState* st = (ButtonGestureState*)malloc(sizeof(ButtonGestureState));
   st->last_state = HIGH;
   st->last_debounce = 0;
+  st->down_ms = 0;
+  st->last_up_ms = 0;
+  st->tap_count = 0;
+  st->long_sent = false;
+  st->stable_state = HIGH;
+  st->block_until_release = false;
 
   dev->state = st;
+
+  button_dev = dev;
+  scheduler_add(button_task, 10);
 }
 
 void button_poll(Device* dev) {
-  ButtonState* st = (ButtonState*)dev->state;
-
+  ButtonGestureState* st = (ButtonGestureState*)dev->state;
   int reading = digitalRead(dev->pin);
 
+  if (st->block_until_release) {
+    if (reading == HIGH) {
+      st->block_until_release = false;
+    } else {
+      st->last_state = reading;
+      return;
+    }
+  }
+
+  if (millis() < BOOT_IGNORE_MS) {
+    st->tap_count = 0;
+    st->down_ms = 0;
+    st->last_up_ms = millis();
+    st->long_sent = false;
+    st->last_state = reading;
+    return;
+  }
+
+  // debounce
   if (reading != st->last_state) {
     st->last_debounce = millis();
   }
 
-  if ((millis() - st->last_debounce) > 50) {
+  if ((millis() - st->last_debounce) > DEBOUNCE_MS) {
+    if (reading != st->stable_state) {
+      st->stable_state = reading;
+      unsigned long now = millis();
 
-    static int stable_state = HIGH;
-
-    if (reading != stable_state) {
-      stable_state = reading;
-
-      if (stable_state == LOW) {
-        Serial.println("BUTTON PRESS DETECTED");
-
-        Event e;
-        e.type = EVENT_BUTTON_PRESS;
-        e.device_id = dev->id;
-        e.has_payload = false;
-
-        if (!event_push(e)) {
-          Serial.println("QUEUE CHEIA 💀");
+      if (st->stable_state == LOW) {
+        st->down_ms = now;
+        st->long_sent = false;
+      } else {
+        if (st->long_sent) {
+          st->tap_count = 0;
         } else {
-          Serial.println("EVENT PUSH OK");
+          st->tap_count++;
         }
+
+        st->last_up_ms = now;
+        st->down_ms = 0;
       }
     }
   }
 
+  // long press
+  if (st->down_ms > 0 && !st->long_sent && (millis() - st->down_ms) > LONG_PRESS_MS) {
+    Event e;
+    e.type = EVENT_BUTTON_PRESS;
+    e.device_id = dev->id;
+    e.has_payload = true;
+    e.payload.value = GESTURE_LONG_PRESS;
+
+    event_push(e);
+
+    st->long_sent = true;
+
+    st->tap_count = 0;
+    st->down_ms = 0;
+
+    st->block_until_release = true;
+
+    return;
+  }
+
+  // taps
+  if (st->tap_count > 0 && (millis() - st->last_up_ms) > DOUBLE_TAP_WINDOW_MS) {
+    Event e;
+    e.type = EVENT_BUTTON_PRESS;
+    e.device_id = dev->id;
+    e.has_payload = true;
+
+    if (st->tap_count == 1) e.payload.value = GESTURE_TAP;
+    else if (st->tap_count == 2) e.payload.value = GESTURE_DOUBLE_TAP;
+    else e.payload.value = GESTURE_TRIPLE_TAP;
+
+    event_push(e);
+    st->tap_count = 0;
+  }
+
   st->last_state = reading;
+}
+
+void button_task() {
+  if (button_dev && button_dev->poll) {
+    button_dev->poll(button_dev);
+  }
+}
+
+void button_reset() {
+  if (!button_dev || !button_dev->state) return;
+
+  ButtonGestureState* st = (ButtonGestureState*)button_dev->state;
+
+  st->tap_count = 0;
+  st->down_ms = 0;
+  st->last_up_ms = millis();
+  st->long_sent = false;
+  st->block_until_release = true;
+  st->stable_state = HIGH;
+  st->last_state = HIGH;
 }

@@ -10,6 +10,16 @@ void event_init() {
 }
 
 bool event_push(Event e) {
+  Serial.println("[!] EVENT PUSH");
+  Serial.print(F("DEVICE ID: "));
+  Serial.print(e.device_id);
+  Serial.print(F(" | Type: "));
+  Serial.print(e.type);
+  Serial.print(F(" | Payload: "));
+  Serial.println(e.has_payload ? "true" : "false");
+  Serial.print(F(" | Value: "));
+  Serial.print(e.payload.value);
+
   int next = (head + 1) % EVENT_QUEUE_SIZE;
   if (next == tail) return false;
 
@@ -24,4 +34,9 @@ bool event_pop(Event* e) {
   *e = event_queue[tail];
   tail = (tail + 1) % EVENT_QUEUE_SIZE;
   return true;
+}
+
+void event_clear() {
+  head = 0;
+  tail = 0;
 }

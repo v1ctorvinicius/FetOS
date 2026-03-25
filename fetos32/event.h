@@ -25,3 +25,4 @@ typedef struct {
 void event_init();
 bool event_push(Event e);
 bool event_pop(Event* e);
+void event_clear();

@@ -8,3 +8,4 @@ typedef struct {
 
 void button_init(Device* dev_base);
 void button_poll(Device* dev_base);
+void button_reset();
