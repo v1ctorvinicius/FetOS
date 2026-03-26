@@ -2,22 +2,29 @@
 #include "system.h"
 #include "oled.h"
 #include <Arduino.h>
-#include "app.h"
 #include "button_gesture.h"
 
 App app_debug;
 
-static int event_count = 0;
-static int last_event = -1;
-static bool ignore_input = false;
-static uint32_t enter_time = 0;
+enum DebugPage {
+  PAGE_SYSTEM,
+  PAGE_EVENTS
+};
+
+static DebugPage current_page = PAGE_SYSTEM;
+static uint32_t total_events = 0;
+static const char* last_gesture = "NONE";
+
+void app_debug_setup() {
+  app_debug.name = "Sys Monitor";
+  app_debug.on_event = app_debug_on_event;
+  app_debug.render = app_debug_render;
+  app_debug.on_enter = app_debug_on_enter;
+  app_debug.on_exit = app_debug_on_exit;
+}
 
 void app_debug_on_enter() {
-  event_count = 0;
-  last_event = -1;
-
-  ignore_input = true;
-  enter_time = millis();
+  current_page = PAGE_SYSTEM;
 }
 
 void app_debug_on_exit() {
@@ -26,34 +33,27 @@ void app_debug_on_exit() {
 void app_debug_on_event(Event* e) {
   if (!e) return;
 
-  // if (ignore_input) {
-  //   if (millis() - enter_time > 200) {
-  //     ignore_input = false;
-  //   } else {
-  //     return;
-  //   }
-  // }
+  total_events++;
 
-  event_count++;
-  last_event = e->payload.value;
+  if (e->has_payload) {
+    switch (e->payload.value) {
+      case GESTURE_TAP: last_gesture = "TAP"; break;
+      case GESTURE_DOUBLE_TAP: last_gesture = "DBL_TAP"; break;
+      case GESTURE_TRIPLE_TAP: last_gesture = "TPL_TAP"; break;
+      case GESTURE_LONG_PRESS: last_gesture = "HOLD"; break;
+      default: last_gesture = "UNKNOWN"; break;
+    }
 
-  if (e->has_payload && e->payload.value == GESTURE_DOUBLE_TAP) {
-    system_set_app(&launcher_app);
-    return;
+    if (e->payload.value == GESTURE_DOUBLE_TAP) {
+      system_set_app(&launcher_app);
+      return;
+    }
+
+    if (e->payload.value == GESTURE_TAP) {
+      if (current_page == PAGE_SYSTEM) current_page = PAGE_EVENTS;
+      else current_page = PAGE_SYSTEM;
+    }
   }
-
-  Device* oled_dev = system_get_device_by_id(2);
-  if (!oled_dev || !oled_dev->state) return;
-
-  OledState* oled = (OledState*)oled_dev->state;
-
-  char buffer[64];
-  snprintf(buffer, sizeof(buffer),
-           "Events: %d\nLast: %d",
-           event_count,
-           last_event);
-
-  strcpy(oled->text, buffer);
 }
 
 void app_debug_render() {
@@ -61,24 +61,31 @@ void app_debug_render() {
   if (!oled_dev || !oled_dev->state) return;
 
   OledState* oled = (OledState*)oled_dev->state;
-
   oled_clear(oled);
 
-  char buffer[64];
-  snprintf(buffer, sizeof(buffer),
-           "Events: %d\nLast: %d",
-           event_count,
-           last_event);
+  char buf1[32];
+  char buf2[32];
 
-  ui_text(oled, 0, 10, buffer, 1);
+  if (current_page == PAGE_SYSTEM) {
+    ui_center_text(oled, 0, "- SYSTEM -", 1);
+
+    uint32_t free_heap = ESP.getFreeHeap() / 1024;
+    snprintf(buf1, sizeof(buf1), "RAM: %lu KB", free_heap);
+
+    uint32_t uptime_sec = millis() / 1000;
+    snprintf(buf2, sizeof(buf2), "UP: %lu s", uptime_sec);
+
+    ui_text(oled, 0, 25, buf1, 1);
+    ui_text(oled, 0, 40, buf2, 1);
+  } else if (current_page == PAGE_EVENTS) {
+    ui_center_text(oled, 0, "- EVENTS -", 1);
+
+    snprintf(buf1, sizeof(buf1), "Total: %lu", total_events);
+    snprintf(buf2, sizeof(buf2), "Last: %s", last_gesture);
+
+    ui_text(oled, 0, 25, buf1, 1);
+    ui_text(oled, 0, 40, buf2, 1);
+  }
 
   oled_flush(oled);
-}
-
-void app_debug_setup() {
-  app_debug.name = "Debug";
-  app_debug.on_event = app_debug_on_event;
-  app_debug.render = app_debug_render;
-  app_debug.on_enter = app_debug_on_enter;
-  app_debug.on_exit = app_debug_on_exit;
 }

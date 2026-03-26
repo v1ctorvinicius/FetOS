@@ -1,7 +1,6 @@
-// debug_app.h
 #pragma once
-#include "event.h"
 #include "app.h"
+#include "event.h"
 
 extern App app_debug;
 

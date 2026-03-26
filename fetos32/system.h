@@ -4,12 +4,13 @@
 #include "device.h"
 #include "app.h"
 
+#define MAX_APPS 8
+
 enum SystemState {
   SYS_BOOT,
   SYS_LOCK,
   SYS_RUNNING
 };
-
 
 void system_init();
 void system_loop();
@@ -26,3 +27,7 @@ void system_set_app(App* app);
 
 extern SystemState system_state;
 void system_render();
+
+bool system_register_app(App* app);
+int system_get_app_count();
+App* system_get_app_by_index(int index);

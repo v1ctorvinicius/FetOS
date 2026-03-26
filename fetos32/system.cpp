@@ -3,9 +3,14 @@
 #include "button.h"
 #include "oled.h"
 #include "launcher.h"
-#include "Arduino.h"
-#include "app_debug.h"
 #include "scheduler.h"
+#include "Arduino.h"
+#include "persistence.h"
+
+#include "app_debug.h"
+#include "app_pomodoro.h"
+#include "app_clock.h"
+#include "app_settings.h"
 
 #define MAX_DEVICES 4
 
@@ -18,6 +23,9 @@ App launcher_app;
 static uint32_t input_block_until = 0;
 
 SystemState system_state = SYS_LOCK;
+
+App* registered_apps[MAX_APPS];
+int registered_app_count = 0;
 
 static void event_task() {
   Event e;
@@ -60,13 +68,25 @@ void system_init() {
       devices[i].init(&devices[i]);
   }
 
-  launcher_app.name = "Launcher";
-  launcher_app.on_event = launcher_on_event;
-  launcher_app.render = launcher_render;
-  launcher_app.on_enter = launcher_on_enter;
-  launcher_app.on_exit = launcher_on_exit;
+  persistence_init();
+  int saved_brightness = persistence_read_int("scr_brt", 255);
+  Device* oled_dev = system_get_device_by_id(2);
+  if (oled_dev && oled_dev->state) {
+    OledState* st = (OledState*)oled_dev->state;
+    st->display->ssd1306_command(SSD1306_SETCONTRAST);
+    st->display->ssd1306_command(saved_brightness);
+  }
 
+  app_launcher_setup();
   app_debug_setup();
+  app_pomodoro_setup();
+  app_clock_setup();
+  app_settings_setup();
+
+  system_register_app(&app_debug);
+  system_register_app(&app_pomodoro);
+  system_register_app(&app_clock);
+  system_register_app(&app_settings);
 
   current_app = &launcher_app;
   current_app->on_enter();
@@ -153,7 +173,7 @@ void system_set_app(App* app) {
   event_clear();
   button_reset();
 
-  delay(50);
+  // delay(50);
 
   Device* oled_dev = system_get_device_by_id(2);
   if (oled_dev && oled_dev->state) {
@@ -162,11 +182,17 @@ void system_set_app(App* app) {
     strcpy(st->text, "");
   }
 
+  for (int i = 0; i < system_get_app_count(); i++) {
+    if (system_get_app_by_index(i) == app) {
+      persistence_write_int("last_app", i);
+      break;
+    }
+  }
+
   current_app = app;
 
-  if (current_app && current_app->on_enter) {
+  if (current_app && current_app->on_enter)
     current_app->on_enter();
-  }
 }
 
 
@@ -191,4 +217,19 @@ void system_render() {
   }
 
   oled_flush(oled);
+}
+
+bool system_register_app(App* app) {
+  if (registered_app_count >= MAX_APPS) return false;
+  registered_apps[registered_app_count++] = app;
+  return true;
+}
+
+int system_get_app_count() {
+  return registered_app_count;
+}
+
+App* system_get_app_by_index(int index) {
+  if (index < 0 || index >= registered_app_count) return nullptr;
+  return registered_apps[index];
 }
