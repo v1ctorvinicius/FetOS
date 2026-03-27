@@ -1,8 +1,8 @@
 #include "event.h"
 
 static Event event_queue[EVENT_QUEUE_SIZE];
-static int head = 0;
-static int tail = 0;
+int head = 0;
+int tail = 0;
 
 void event_init() {
   head = 0;

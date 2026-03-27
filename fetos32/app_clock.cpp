@@ -27,6 +27,8 @@ static const uint32_t timer_options[] = { 60000, 180000, 300000, 600000 };
 #define NUM_TIMER_OPTIONS (sizeof(timer_options) / sizeof(timer_options[0]))
 static uint8_t current_timer_idx = 0;
 
+static bool ignore_input = true;
+
 #define ALARM_LED_PIN 2
 
 void app_clock_setup() {
@@ -43,6 +45,9 @@ void app_clock_setup() {
 void app_clock_on_enter() {
   current_mode = MODE_TIME;
   digitalWrite(ALARM_LED_PIN, LOW);
+  stopwatch_running = false;
+  timer_running = false;
+  ignore_input = true;
 }
 
 void app_clock_on_exit() {
@@ -55,6 +60,11 @@ void app_clock_on_exit() {
 void app_clock_on_event(Event* e) {
   if (!e || !e->has_payload) return;
   int gesture = e->payload.value;
+
+  if (ignore_input) {
+    ignore_input = false;
+    return;
+  }
 
   if (gesture == GESTURE_DOUBLE_TAP) {
     system_set_app(&launcher_app);

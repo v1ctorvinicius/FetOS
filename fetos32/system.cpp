@@ -206,8 +206,15 @@ void system_render() {
 
   switch (system_state) {
     case SYS_LOCK:
-      ui_center_text(oled, 20, "Locked", 2);
-      ui_center_text(oled, 45, "Hold to unlock", 1);
+      ui_center_text(oled, 0, "v0.1", 1);
+      
+      oled->display->setCursor(20, 20);
+      oled->display->setTextSize(3);
+      oled->display->printf("FetOS");
+      oled->display->setTextSize(1);
+      oled->display->printf("32");
+
+      ui_center_text(oled, 55, "Hold to unlock", 1);
       break;
 
     case SYS_RUNNING:
