@@ -5,7 +5,6 @@
 #include "Arduino.h"
 #include "persistence.h"
 #include "capability.h"
-#include "device_ble.h"
 #include <LittleFS.h>
 
 #include "rgb_led.h"
