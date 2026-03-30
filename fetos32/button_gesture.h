@@ -1,4 +1,3 @@
-// button_gesture.h
 #pragma once
 #include "device.h"
 
@@ -7,7 +6,8 @@
 #define DOUBLE_TAP_WINDOW_MS 300
 #define TRIPLE_TAP_WINDOW_MS 500
 
-typedef enum {
+typedef enum
+{
   GESTURE_NONE,
   GESTURE_TAP,
   GESTURE_DOUBLE_TAP,
@@ -16,17 +16,14 @@ typedef enum {
   GESTURE_LONG_PRESS_PREVIEW
 } GestureType;
 
-typedef struct {
+typedef struct
+{
   int last_state;
   int stable_state;
   unsigned long last_debounce;
   bool block_until_release;
-
-  // Gesture
   uint32_t down_ms;
   uint32_t last_up_ms;
   uint8_t tap_count;
   bool long_sent;
 } ButtonGestureState;
-
-GestureType process_button_gesture(Device* dev, ButtonGestureState* state, bool pressed);

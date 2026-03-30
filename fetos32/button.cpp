@@ -5,12 +5,19 @@
 #include "button_gesture.h"
 #include <stdlib.h>
 #include "scheduler.h"
+#include "system.h"
+
 
 #define BOOT_IGNORE_MS 300
 
 static Device* button_dev = nullptr;
 
-static void button_task();
+static void button_task(void* ctx) {
+  Device* dev = (Device*)ctx;
+  if (dev && dev->poll) {
+    dev->poll(dev);
+  }
+}
 
 void button_init(Device* dev) {
   pinMode(dev->pin, INPUT_PULLUP);
@@ -28,7 +35,9 @@ void button_init(Device* dev) {
   dev->state = st;
 
   button_dev = dev;
-  scheduler_add(button_task, 10);
+
+  scheduler_add(button_task, dev, 10, TASK_PRIORITY_HIGH, "button");
+  system_register_capability("input:button", handle_get_button, dev);
 }
 
 void button_poll(Device* dev) {
@@ -90,10 +99,8 @@ void button_poll(Device* dev) {
     event_push(e);
 
     st->long_sent = true;
-
     st->tap_count = 0;
     st->down_ms = 0;
-
     st->block_until_release = true;
 
     return;
@@ -117,11 +124,7 @@ void button_poll(Device* dev) {
   st->last_state = reading;
 }
 
-void button_task() {
-  if (button_dev && button_dev->poll) {
-    button_dev->poll(button_dev);
-  }
-}
+
 
 void button_reset() {
   if (!button_dev || !button_dev->state) return;
@@ -135,4 +138,15 @@ void button_reset() {
   st->block_until_release = true;
   st->stable_state = HIGH;
   st->last_state = HIGH;
+}
+
+
+
+static RequestResult handle_get_button(Device* dev, const RequestPayload* payload, CallerContext* caller) {
+  // O slot "result" (params[0]) é onde a FVM espera a resposta
+  // digitalRead retorna 0 ou 1. Como o seu botão provavelmente está com PULLUP:
+  // !digitalRead(dev->pin) retorna 1 quando APERTADO.
+  payload->params[0].int_value = !digitalRead(dev->pin);
+
+  return REQ_ACCEPTED;
 }

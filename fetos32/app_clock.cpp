@@ -37,6 +37,10 @@ void app_clock_setup() {
   app_clock.render = app_clock_render;
   app_clock.on_enter = app_clock_on_enter;
   app_clock.on_exit = app_clock_on_exit;
+  app_clock.update = nullptr;
+  app_clock.update_interval_ms = 0;
+  app_clock.update_ctx = nullptr;
+  app_clock._task_id = -1;
 
   pinMode(ALARM_LED_PIN, OUTPUT);
   timer_remaining_ms = timer_options[current_timer_idx];
@@ -44,10 +48,10 @@ void app_clock_setup() {
 
 void app_clock_on_enter() {
   current_mode = MODE_TIME;
-  digitalWrite(ALARM_LED_PIN, LOW);
   stopwatch_running = false;
   timer_running = false;
   ignore_input = true;
+  digitalWrite(ALARM_LED_PIN, LOW);
 }
 
 void app_clock_on_exit() {
@@ -104,7 +108,7 @@ void app_clock_on_event(Event* e) {
         digitalWrite(ALARM_LED_PIN, LOW);
       } else {
         if (!timer_running) {
-          if (timer_remaining_ms == 0 && !timer_is_overtime) timer_remaining_ms = timer_options[current_timer_idx];
+          if (timer_remaining_ms == 0) timer_remaining_ms = timer_options[current_timer_idx];
           timer_last_tick = millis();
         }
         timer_running = !timer_running;
@@ -123,15 +127,14 @@ void format_time(uint32_t ms, char* buffer, bool is_negative) {
   uint32_t m = (total_sec % 3600) / 60;
   uint32_t s = total_sec % 60;
 
-  if (is_negative) {
-    snprintf(buffer, 16, "-%02d:%02d:%02d", h, m, s);
-  } else {
-    snprintf(buffer, 16, "%02d:%02d:%02d", h, m, s);
-  }
+  if (is_negative) snprintf(buffer, 16, "-%02d:%02d:%02d", h, m, s);
+  else snprintf(buffer, 16, "%02d:%02d:%02d", h, m, s);
 }
 
 void app_clock_render() {
   Device* oled_dev = system_get_device_by_id(2);
+  if (!oled_dev || !oled_dev->state) return;
+
   OledState* oled = (OledState*)oled_dev->state;
   oled_clear(oled);
 
@@ -142,7 +145,8 @@ void app_clock_render() {
     ui_center_text(oled, 0, "UPTIME", 1);
     format_time(millis(), time_str, false);
     ui_center_text(oled, 20, time_str, 2);
-    ui_center_text(oled, 50, "1 Tap: Next", 1);
+    ui_center_text(oled, 50, "Tap: Next", 1);
+
   } else if (current_mode == MODE_STOPWATCH) {
     digitalWrite(ALARM_LED_PIN, LOW);
     ui_center_text(oled, 0, "STOPWATCH", 1);
@@ -155,7 +159,8 @@ void app_clock_render() {
 
     format_time(stopwatch_elapsed_ms, time_str, false);
     ui_center_text(oled, 20, time_str, 2);
-    ui_center_text(oled, 50, stopwatch_running ? "Hold: Pause" : "Hold: Start | 3x: Reset", 1);
+    ui_center_text(oled, 50, stopwatch_running ? "Hold: Pause" : "Hold-Start | 3x-Reset", 1);
+
   } else if (current_mode == MODE_TIMER) {
     uint32_t mins = timer_options[current_timer_idx] / 60000;
     char title_str[16];
@@ -171,7 +176,6 @@ void app_clock_render() {
         timer_remaining_ms += (now - timer_last_tick);
         timer_last_tick = now;
       }
-
     } else {
       snprintf(title_str, 16, "TIMER (%dm)", mins);
       ui_center_text(oled, 0, title_str, 1);
@@ -188,6 +192,7 @@ void app_clock_render() {
           uint32_t excess = delta - timer_remaining_ms;
           timer_remaining_ms = excess;
           timer_is_overtime = true;
+          system_request("audio:beep_beep", nullptr);
         }
       }
     }
@@ -195,13 +200,9 @@ void app_clock_render() {
     format_time(timer_remaining_ms, time_str, timer_is_overtime);
     ui_center_text(oled, 20, time_str, 2);
 
-    if (timer_is_overtime) {
-      ui_center_text(oled, 50, "Tap/Hold: Stop & Reset", 1);
-    } else if (timer_running) {
-      ui_center_text(oled, 50, "Hold: Pause", 1);
-    } else {
-      ui_center_text(oled, 50, "Hold: Start | 3x: Time", 1);
-    }
+    if (timer_is_overtime) ui_center_text(oled, 50, "Tap/Hold: Stop/Reset", 1);
+    else if (timer_running) ui_center_text(oled, 50, "Hold: Pause", 1);
+    else ui_center_text(oled, 50, "Hold-Start | 3x-Reset", 1);
   }
 
   oled_flush(oled);

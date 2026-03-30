@@ -4,6 +4,7 @@
 #include "button_gesture.h"
 #include <Arduino.h>
 #include "scheduler.h"
+#include <LittleFS.h>
 
 extern App app_debug;
 
@@ -11,22 +12,6 @@ static void launcher_task();
 
 int current_index = 0;
 static int launcher_task_id = -1;
-
-static void draw_launcher(OledState* oled) {
-  oled_clear(oled);
-  ui_center_text(oled, 0, "Apps", 1);
-
-  int total = system_get_app_count();
-  if (total > 0) {
-    const char* app_names[MAX_APPS];
-    for (int i = 0; i < total; i++) {
-      app_names[i] = system_get_app_by_index(i)->name;
-    }
-    ui_list_scroll(oled, app_names, total, current_index, UI_BODY_Y);
-  }
-
-  oled_flush(oled);
-}
 
 static void draw_lock(OledState* oled) {
   ui_center_text(oled, 20, "Lock?", 2);
@@ -98,6 +83,7 @@ void launcher_render() {
       for (int i = 0; i < total; i++) {
         app_names[i] = system_get_app_by_index(i)->name;
       }
+
       ui_list_scroll(oled, app_names, total, current_index, UI_BODY_Y);
     }
   } else if (state == LAUNCHER_STATE_CONFIRM_LOCK) {
@@ -112,10 +98,27 @@ void launcher_task() {
   }
 }
 
-void app_launcher_setup(){
+void app_launcher_setup() {
   launcher_app.name = "Launcher";
   launcher_app.on_event = launcher_on_event;
   launcher_app.render = launcher_render;
   launcher_app.on_enter = launcher_on_enter;
   launcher_app.on_exit = launcher_on_exit;
+}
+
+void launcher_discover_apps() {
+  File root = LittleFS.open("/");
+  File file = root.openNextFile();
+
+  while (file) {
+    String fileName = file.name();
+    if (fileName.endsWith(".fvm")) {
+      Serial.printf("[Launcher] App detectado: %s\n", fileName.c_str());
+      App* new_app = fvm_app_load_fs(fileName.c_str());
+      if (new_app) {
+        system_register_app(new_app);
+      }
+    }
+    file = root.openNextFile();
+  }
 }

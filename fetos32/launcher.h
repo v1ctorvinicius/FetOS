@@ -19,3 +19,4 @@ void launcher_on_exit();
 void launcher_on_event(Event* e);
 void launcher_render();
 void app_launcher_setup();
+void launcher_discover_apps();

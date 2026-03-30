@@ -1,6 +1,8 @@
 #pragma once
 #include "app.h"
 #include "event.h"
+#include "buzzer.h"
+#include "persistence.h"
 
 extern App app_settings;
 

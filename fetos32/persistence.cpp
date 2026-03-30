@@ -1,9 +1,14 @@
 #include "persistence.h"
 #include <Preferences.h>
+#include <LittleFS.h>
 
 static Preferences prefs;
 
 void persistence_init() {
+  if (!LittleFS.begin(true)) {
+    Serial.println("[FS] Erro ao montar LittleFS");
+    return;
+  }
   prefs.begin("fetos_storage", false);
   prefs.end();
 }
