@@ -62,6 +62,7 @@ venv/
 *.atsuo
 *.dep
 *.pdb
+libraries/
 
 # === Sistema
 .DS_Store
@@ -78,3 +79,4 @@ fethub.egg-info
 !fethub/
 !tools/
 !docs/
+
