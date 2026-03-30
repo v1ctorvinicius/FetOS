@@ -14,26 +14,18 @@ def upload_fvm(port, filepath):
     print(f"📦 Preparando envio: {filename} ({filesize} bytes)")
 
     try:
-        ser = serial.Serial(port, 115200, timeout=1) 
-        
-        # Tenta evitar que o ESP32 reinicie cortando o sinal de DTR/RTS
-        ser.setDTR(False)
-        ser.setRTS(False)
-        
-        print("🔌 Porta aberta! Aguardando o FetOS acordar...")
-        # Dá 2 segundos pro ESP32 terminar o boot caso o auto-reset seja inevitável
-        time.sleep(2) 
-        
-        # Limpa todo o lixo/logs de boot que acumularam nesse tempo
+        ser = serial.Serial()
+        ser.port = port
+        ser.baudrate = 115200
+        ser.dtr = False  # define ANTES de abrir — evita pulso de reset
+        ser.rts = False  # define ANTES de abrir — evita pulso de reset
+        ser.open()
+        time.sleep(0.5)
         ser.reset_input_buffer()
-        ser.reset_output_buffer()
-        
     except Exception as e:
         print(f"❌ Erro ao abrir porta {port}. Está sendo usada pelo Monitor Serial?")
+        print(f"   Detalhe: {e}")
         return
-
-    # Limpa o buffer de qualquer log antigo que o ESP32 tenha mandado
-    ser.reset_input_buffer()
 
     # 1. Manda o comando de cabeçalho
     cmd = f"FVM_UPLOAD {filename} {filesize}\n"
@@ -43,11 +35,11 @@ def upload_fvm(port, filepath):
     # 2. Espera o "OK" filtrando logs do sistema
     start_time = time.time()
     acesso_liberado = False
-    
-    while time.time() - start_time < 3.0: # 3 segundos de timeout para o handshake
+
+    while time.time() - start_time < 3.0:
         if ser.in_waiting > 0:
             resp = ser.readline().decode('utf-8', errors='ignore').strip()
-            
+
             if resp == "OK":
                 acesso_liberado = True
                 break
@@ -56,7 +48,6 @@ def upload_fvm(port, filepath):
                 ser.close()
                 return
             elif resp != "":
-                # Imprime o lixo/log que chegou no meio do caminho para você ver
                 print(f"  [Log do OS] {resp}")
 
     if not acesso_liberado:
@@ -66,16 +57,26 @@ def upload_fvm(port, filepath):
 
     print("🚀 Acesso liberado! Despejando o bytecode...")
 
-    # 3. Manda o binário
+    # 3. Manda o binário em blocos pequenos
+    chunk_size = 64
     with open(filepath, 'rb') as f:
         data = f.read()
-        ser.write(data)
+        total_sent = 0
+        for i in range(0, len(data), chunk_size):
+            chunk = data[i:i + chunk_size]
+            ser.write(chunk)
+            ser.flush()
+            total_sent += len(chunk)
+            time.sleep(0.01)
+            print(f"  Enviando... {total_sent}/{filesize} bytes", end='\r')
+
+    print("\n✅ Envio concluído. Aguardando confirmação...")
 
     # 4. Confirmação de recebimento
     start_time = time.time()
     sucesso = False
-    
-    while time.time() - start_time < 3.0:
+
+    while time.time() - start_time < 5.0:
         if ser.in_waiting > 0:
             resp = ser.readline().decode('utf-8', errors='ignore').strip()
             if resp == "DONE":
@@ -83,18 +84,28 @@ def upload_fvm(port, filepath):
                 break
             elif resp != "":
                 print(f"  [Log do OS] {resp}")
-                
-    if sucesso:
-        print(f"✅ SUCESSO! {filename} gravado e pronto para rodar.")
-    else:
-        print("⚠️ Aviso: Arquivo enviado, mas não recebi a confirmação 'DONE' final.")
 
+    if sucesso:
+        print(f"✅ SUCESSO! Gravado. Entrando em modo MONITOR (Ctrl+C para sair)...")
+        try:
+            while True:
+                if ser.in_waiting > 0:
+                    line = ser.read(ser.in_waiting).decode('utf-8', errors='ignore')
+                    print(line, end='')
+                time.sleep(0.01)
+        except KeyboardInterrupt:
+            print("\nSaindo...")
+    else:
+        print("⚠️ Falha: ESP32 não confirmou o recebimento.")
+
+    ser.dtr = False
+    ser.rts = False
     ser.close()
 
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Uso: python fetlink_upload.py <PORTA_COM> <arquivo.fvm>")
-        print("Ex: python fetlink_upload.py COM3 app_buzzer.fvm")
+        print("Ex:  python fetlink_upload.py COM3 app_buzzer.fvm")
         sys.exit(1)
-        
+
     upload_fvm(sys.argv[1], sys.argv[2])

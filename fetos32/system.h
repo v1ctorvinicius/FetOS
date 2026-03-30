@@ -31,7 +31,10 @@ extern App app_debug;
 extern SystemState system_state;
 void system_render();
 
+extern bool is_system_mutating;
+
 bool system_register_app(App *app);
+bool system_unregister_app(App* app);
 int system_get_app_count();
 App *system_get_app_by_index(int index);
 

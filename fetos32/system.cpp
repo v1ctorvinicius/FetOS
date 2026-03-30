@@ -18,6 +18,7 @@
 #include "app_clock.h"
 #include "app_settings.h"
 #include "app_buzzer.h"
+#include "app_manager.h"
 
 #define MAX_DEVICES 6
 
@@ -38,18 +39,31 @@ static bool is_uploading = false;
 static File upload_file;
 static uint32_t upload_bytes_remaining = 0;
 
+bool is_system_mutating = false;
+static char cmd_buf[128];
+static uint8_t cmd_len = 0;
+
 static void task_serial_uploader(void *ctx)
 {
-  while (Serial.available() > 0)
-  {
-    if (!is_uploading)
-    {
-      String line = Serial.readStringUntil('\n');
-      line.trim();
 
-      if (line.length() > 0)
+  yield();
+
+  if (!is_uploading)
+  {
+
+    while (Serial.available() > 0)
+    {
+      char c = (char)Serial.read();
+
+      if (c == '\n' || c == '\r')
       {
-        Serial.println("[Uploader] Ouvi: '" + line + "'");
+        if (cmd_len == 0)
+          continue;
+        cmd_buf[cmd_len] = '\0';
+        cmd_len = 0;
+
+        String line = String(cmd_buf);
+        line.trim();
 
         if (line.startsWith("FVM_UPLOAD "))
         {
@@ -76,36 +90,47 @@ static void task_serial_uploader(void *ctx)
               Serial.println("ERR_FS");
             }
           }
-          else
-          {
-            Serial.println("[Uploader] Erro: Faltam parametros no comando.");
-          }
+        }
+        break;
+      }
+      else
+      {
+        if (cmd_len < sizeof(cmd_buf) - 1)
+        {
+          cmd_buf[cmd_len++] = c;
         }
       }
     }
-    else
+  }
+  else
+  {
+
+    uint8_t buf[64];
+    int avail = Serial.available();
+    if (avail > 0)
     {
-      uint8_t buf[64];
-      int to_read = Serial.available();
-      if (to_read > (int)sizeof(buf))
-        to_read = sizeof(buf);
+      int to_read = avail > (int)sizeof(buf) ? sizeof(buf) : avail;
       if (to_read > (int)upload_bytes_remaining)
         to_read = upload_bytes_remaining;
 
-      int bytes_read = Serial.readBytes((char *)buf, to_read);
+      int bytes_read = Serial.readBytes(buf, to_read);
       if (bytes_read > 0)
       {
         upload_file.write(buf, bytes_read);
         upload_bytes_remaining -= bytes_read;
+        yield();
       }
+    }
 
-      if (upload_bytes_remaining == 0)
-      {
-        upload_file.close();
-        is_uploading = false;
-        Serial.println("DONE");
-        system_discover_fs_apps();
-      }
+    if (upload_bytes_remaining == 0)
+    {
+      upload_file.flush();
+      upload_file.close();
+      is_uploading = false;
+      event_clear();
+      button_reset();
+      Serial.println("DONE");
+      system_discover_fs_apps();
     }
   }
 }
@@ -171,6 +196,8 @@ static void task_events(void *ctx)
 
 static void task_render(void *ctx)
 {
+  if (is_system_mutating)
+    return;
   for (int i = 0; i < device_count; i++)
   {
     if (devices[i].render)
@@ -239,12 +266,13 @@ void system_init()
   app_clock_setup();
   app_settings_setup();
   app_buzzer_setup();
-
+  app_manager_setup();
   system_register_app(&app_debug);
   system_register_app(&app_pomodoro);
   system_register_app(&app_clock);
   system_register_app(&app_settings);
   system_register_app(&app_buzzer);
+  system_register_app(&app_manager);
 
   system_discover_fs_apps();
 
@@ -252,9 +280,15 @@ void system_init()
   system_focus_app(&launcher_app);
 }
 
-void system_loop() { scheduler_run(); }
+void system_loop()
+{
+  scheduler_run();
+}
 
-void register_device(Device dev) { devices[device_count++] = dev; }
+void register_device(Device dev)
+{
+  devices[device_count++] = dev;
+}
 
 Device *system_get_device_by_id(uint8_t id)
 {
@@ -361,6 +395,7 @@ void system_render()
   switch (system_state)
   {
   case SYS_LOCK:
+    Serial.println("[DEBUG] render: SYS_LOCK");
     ui_center_text(oled, 0, "v0.2", 1);
     oled->display->setCursor(20, 20);
     oled->display->setTextSize(3);
@@ -387,7 +422,10 @@ bool system_register_app(App *app)
   return true;
 }
 
-int system_get_app_count() { return registered_app_count; }
+int system_get_app_count()
+{
+  return registered_app_count;
+}
 App *system_get_app_by_index(int index)
 {
   if (index < 0 || index >= registered_app_count)
@@ -397,10 +435,14 @@ App *system_get_app_by_index(int index)
 
 void system_discover_fs_apps()
 {
+  is_system_mutating = true;
   Serial.println("[System] Buscando apps no FS...");
   File root = LittleFS.open("/");
   if (!root)
+  {
+    is_system_mutating = false;
     return;
+  }
 
   File file = root.openNextFile();
   while (file)
@@ -430,4 +472,45 @@ void system_discover_fs_apps()
     }
     file = root.openNextFile();
   }
+  is_system_mutating = false;
+}
+
+bool system_unregister_app(App *app)
+{
+  if (!app || app == &launcher_app)
+    return false;
+
+  if (current_app == app)
+  {
+    system_focus_app(&launcher_app);
+  }
+
+  is_system_mutating = true;
+
+  system_kill_app(app);
+
+  bool is_fvm = (app->update != nullptr && app->update_ctx != nullptr);
+  if (is_fvm && app->name && app->name[0] == '/')
+  {
+    LittleFS.remove(app->name);
+  }
+
+  for (int i = 0; i < registered_app_count; i++)
+  {
+    if (registered_apps[i] == app)
+    {
+      for (int j = i; j < registered_app_count - 1; j++)
+      {
+        registered_apps[j] = registered_apps[j + 1];
+      }
+      registered_apps[--registered_app_count] = nullptr;
+      break;
+    }
+  }
+
+  if (is_fvm)
+    fvm_app_destroy(app);
+
+  is_system_mutating = false;
+  return true;
 }

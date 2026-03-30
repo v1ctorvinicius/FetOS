@@ -70,7 +70,7 @@ void launcher_on_event(Event* e) {
 
 void launcher_render() {
   Device* oled_dev = system_get_device_by_id(2);
-  if (!oled_dev || !oled_dev->state) return;
+  if (!oled_dev || !oled_dev->state || is_system_mutating) return;  // <-- Trava de mutação
 
   OledState* oled = (OledState*)oled_dev->state;
 
@@ -78,13 +78,19 @@ void launcher_render() {
     ui_center_text(oled, 0, "Apps", 2);
 
     int total = system_get_app_count();
+
+    if (current_index >= total) current_index = (total > 0) ? total - 1 : 0;
+
     if (total > 0) {
       const char* app_names[MAX_APPS];
       for (int i = 0; i < total; i++) {
-        app_names[i] = system_get_app_by_index(i)->name;
+        App* a = system_get_app_by_index(i);
+        app_names[i] = a ? a->name : "---";
       }
 
       ui_list_scroll(oled, app_names, total, current_index, UI_BODY_Y);
+    } else {
+      ui_center_text(oled, 30, "No Apps", 1);
     }
   } else if (state == LAUNCHER_STATE_CONFIRM_LOCK) {
     ui_center_text(oled, 20, "Lock?", 2);
