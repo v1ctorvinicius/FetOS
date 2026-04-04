@@ -3,7 +3,6 @@ import sys
 import struct
 import shlex
 
-# Mapeamento de Opcodes (Mantendo o seu padrão)
 OPCODES = {
     "PUSH_INT":  (0x01, 'h'),
     "PUSH_STR":  (0x02, 's'),
@@ -35,7 +34,7 @@ OPCODES = {
 }
 
 def compile_fasm(input_file, output_file):
-    with open(input_file, 'r') as f:
+    with open(input_file, 'r', encoding='utf-8') as f:
         lines = f.readlines()
 
     string_table = []
@@ -63,7 +62,6 @@ def compile_fasm(input_file, output_file):
             elif arg in ['B', 's']: size += 1
         current_address += size
 
-    # PASSAGEM 2: Bytecode (AGORA EM BIG ENDIAN '>')
     bytecode = bytearray()
     for op_name, arg_types, args in instructions:
         bytecode.append(OPCODES[op_name][0])
@@ -78,7 +76,6 @@ def compile_fasm(input_file, output_file):
             elif arg_type == 'L': # uint16 Big Endian
                 bytecode.extend(struct.pack('>H', labels[val]))
 
-    # Pack final .fvm
     output = bytearray(b'FVM1')
     output.append(len(string_table))
     for s in string_table:
