@@ -4,6 +4,9 @@
 #include "button_gesture.h"
 #include "launcher.h"
 #include <Arduino.h>
+#include "display_hal.h"
+
+#define SSD1306_WHITE HAL_COLOR_WHITE
 
 typedef enum {
   APP_MGR_LIST,
@@ -20,11 +23,14 @@ static void app_manager_render() {
   if (!oled_dev || !oled_dev->state) return;
   OledState* oled = (OledState*)oled_dev->state;
 
+  DisplayDriver* drv = display_hal_get_primary(DISPLAY_DEFAULT_ID);
+  if (!drv) return;
+
   int total_apps = system_get_app_count();
 
   if (mgr_state == APP_MGR_LIST) {
     ui_center_text(oled, 0, "GERENCIAR APPS", 1);
-    oled->display->drawFastHLine(0, 10, 128, SSD1306_WHITE);
+    if (drv && drv->draw_line) drv->draw_line(drv, 0, 10, 128, 10, DISPLAY_COLOR_ON);
 
     if (total_apps <= 0) {
       ui_center_text(oled, 30, "Lista vazia", 1);
@@ -39,7 +45,7 @@ static void app_manager_render() {
   } else if (mgr_state == APP_MGR_CONFIRM) {
     App* target = system_get_app_by_index(selected_idx);
     ui_center_text(oled, 5, "APAGAR ESTE APP?", 1);
-    oled->display->drawRect(2, 22, 124, 20, SSD1306_WHITE);
+    hal_rect(DISPLAY_DEFAULT_ID, 2, 22, 124, 20, false);
 
     if (target) {
       ui_center_text(oled, 28, target->name, 1);

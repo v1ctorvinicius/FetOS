@@ -1,0 +1,206 @@
+//fetlink_ble.cpp
+#include "fetlink_ble.h"
+#include "fetlink.h"
+#include "device_net.h"
+#include "system.h"
+#include <BLEDevice.h>
+#include <BLEServer.h>
+#include <BLEUtils.h>
+#include <BLE2902.h>
+#include <LittleFS.h>
+#include <string.h>
+#include "esp_system.h"
+#include "esp_mac.h"
+
+// ── Nordic UART Service UUIDs ─────────────────────────────────
+#define NUS_SERVICE_UUID "6E400001-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NUS_CHARACTERISTIC_RX "6E400002-B5A3-F393-E0A9-E50E24DCCA9E"
+#define NUS_CHARACTERISTIC_TX "6E400003-B5A3-F393-E0A9-E50E24DCCA9E"
+
+// ── estado BLE — exportado para device_net.cpp ────────────────
+bool s_connected = false;
+
+static BLEServer* s_server = nullptr;
+static BLECharacteristic* s_tx_char = nullptr;
+
+// ── transporte — implementa o extern de fetlink.h ─────────────
+bool fetlink_transport_write(const uint8_t* data, uint8_t len) {
+  if (!s_connected || !s_tx_char) return false;
+  s_tx_char->setValue((uint8_t*)data, len);
+  s_tx_char->notify();
+  return true;
+}
+
+// ── callbacks BLE ─────────────────────────────────────────────
+class FetLinkServerCallbacks : public BLEServerCallbacks {
+  void onConnect(BLEServer* server) override {
+    s_connected = true;
+    Serial.println("[FetLink BLE] Conectado");
+    system_request("audio:beep", nullptr);
+  }
+
+  void onDisconnect(BLEServer* server) override {
+    s_connected = false;
+    Serial.println("[FetLink BLE] Desconectado — reiniciando advertising");
+    BLEDevice::startAdvertising();
+  }
+};
+
+class FetLinkRxCallbacks : public BLECharacteristicCallbacks {
+  void onWrite(BLECharacteristic* characteristic) override {
+    String value = characteristic->getValue();
+    if (value.length() > 0) {
+      fetlink_ble_on_rx((const uint8_t*)value.c_str(), value.length());
+    }
+  }
+};
+
+void fetlink_ble_on_rx(const uint8_t* data, uint16_t len) {
+  for (uint16_t i = 0; i < len; i++) {
+    fetlink_feed(data[i]);
+  }
+}
+
+// ── callback de mensagem processada ───────────────────────────
+static void on_fetlink_receive(uint8_t src, uint8_t type,
+                               const uint8_t* data, uint16_t len) {
+  Serial.printf("[FetLink] RX src=0x%02X type=0x%02X len=%d\n",
+                src, type, len);
+
+  switch (type) {
+
+    case FLINK_HELLO:
+      {
+        uint8_t reply[1] = { fetlink_node_id() };
+        fetlink_send(src, FLINK_HELLO, reply, 1);
+        Serial.printf("[FetLink] HELLO de 0x%02X — respondido\n", src);
+        break;
+      }
+
+    case FLINK_PUB:
+      {
+        // formato: [TOPIC_LEN(1)] [TOPIC(ASCII)] [DATA_TYPE(1)] [DATA(N)]
+        if (len < 3) break;
+
+        uint8_t topic_len = data[0];
+        if ((uint16_t)(topic_len + 2) > len) break;
+
+        char topic[33];
+        uint8_t tl = topic_len < 32 ? topic_len : 32;
+        memcpy(topic, &data[1], tl);
+        topic[tl] = '\0';
+
+        uint8_t data_type = data[1 + topic_len];
+        const uint8_t* payload = &data[2 + topic_len];
+        uint16_t plen = len - 2 - topic_len;
+
+        int32_t value = 0;
+        if (data_type == 0x01 && plen >= 1) {
+          value = (int32_t)payload[0];  // uint8
+        } else if (data_type == 0x02 && plen >= 2) {
+          value = (int32_t)(int16_t)((payload[0] << 8) | payload[1]);  // int16 BE
+        } else if (data_type == 0x03 && plen >= 1) {
+          value = (int32_t)(payload[0] != 0);  // bool
+        }
+
+        Serial.printf("[FetLink] PUB topic='%s' value=%d\n", topic, value);
+        net_device_publish(topic, value);
+        break;
+      }
+
+    case FLINK_CMD:
+      {
+        char cap[64];
+        uint8_t cap_len = len < 63 ? (uint8_t)len : 63;
+        memcpy(cap, data, cap_len);
+        cap[cap_len] = '\0';
+        Serial.printf("[FetLink] CMD: %s\n", cap);
+        system_request(cap, nullptr);
+        uint8_t ack = 0;
+        fetlink_send(src, FLINK_ACK, &ack, 1);
+        break;
+      }
+
+    case FLINK_APP:
+      {
+        Serial.printf("[FetLink] APP recebido (%d bytes)\n", len);
+
+        char filename[64] = "/fetlink_recv.fvm";
+        uint8_t name_end = 0;
+        for (uint8_t i = 0; i < len && i < 63; i++) {
+          if (data[i] == '\0') {
+            name_end = i + 1;
+            break;
+          }
+        }
+        if (name_end > 1) {
+          filename[0] = '/';
+          uint8_t nl = (name_end - 1 < 62) ? name_end - 1 : 62;
+          memcpy(filename + 1, data, nl);
+          filename[1 + nl] = '\0';
+        }
+
+        const uint8_t* fvm_data = data + name_end;
+        uint16_t fvm_len = len - name_end;
+
+        if (fvm_len == 0) {
+          Serial.println("[FetLink] APP vazio");
+          break;
+        }
+
+        File f = LittleFS.open(filename, "w");
+        if (f) {
+          f.write(fvm_data, fvm_len);
+          f.flush();
+          f.close();
+          Serial.printf("[FetLink] APP gravado: %s (%d bytes)\n", filename, fvm_len);
+          event_clear();
+          button_reset();
+          system_discover_fs_apps();
+        } else {
+          Serial.printf("[FetLink] Erro ao gravar: %s\n", filename);
+        }
+        break;
+      }
+
+    default:
+      Serial.printf("[FetLink] Tipo desconhecido: 0x%02X\n", type);
+      break;
+  }
+}
+
+// ── init ──────────────────────────────────────────────────────
+void fetlink_ble_init() {
+  uint8_t mac[6];
+  esp_read_mac(mac, ESP_MAC_BT);
+  uint8_t node_id = mac[5];
+
+  fetlink_init(node_id, on_fetlink_receive);
+
+  BLEDevice::init("FetOS32");
+  s_server = BLEDevice::createServer();
+  s_server->setCallbacks(new FetLinkServerCallbacks());
+
+  BLEService* service = s_server->createService(NUS_SERVICE_UUID);
+
+  s_tx_char = service->createCharacteristic(
+    NUS_CHARACTERISTIC_TX,
+    BLECharacteristic::PROPERTY_NOTIFY);
+  s_tx_char->addDescriptor(new BLE2902());
+
+  BLECharacteristic* rx_char = service->createCharacteristic(
+    NUS_CHARACTERISTIC_RX,
+    BLECharacteristic::PROPERTY_WRITE | BLECharacteristic::PROPERTY_WRITE_NR);
+  rx_char->setCallbacks(new FetLinkRxCallbacks());
+
+  service->start();
+
+  BLEAdvertising* advertising = BLEDevice::getAdvertising();
+  advertising->addServiceUUID(NUS_SERVICE_UUID);
+  advertising->setScanResponse(true);
+  advertising->setMinPreferred(0x06);
+  advertising->setMinPreferred(0x12);
+  BLEDevice::startAdvertising();
+
+  Serial.printf("[FetLink BLE] No ar — node_id: 0x%02X\n", node_id);
+}

@@ -45,8 +45,11 @@ void button_poll(Device* dev) {
   int reading = digitalRead(dev->pin);
 
   if (st->block_until_release) {
-    if (reading == HIGH) {
+    if (reading == HIGH) { 
       st->block_until_release = false;
+      st->stable_state = HIGH; 
+      st->last_state = HIGH;   
+      return; 
     } else {
       st->last_state = reading;
       return;
@@ -140,13 +143,20 @@ void button_reset() {
   st->last_state = HIGH;
 }
 
-
-
 static RequestResult handle_get_button(Device* dev, const RequestPayload* payload, CallerContext* caller) {
-  // O slot "result" (params[0]) é onde a FVM espera a resposta
-  // digitalRead retorna 0 ou 1. Como o seu botão provavelmente está com PULLUP:
-  // !digitalRead(dev->pin) retorna 1 quando APERTADO.
-  payload->params[0].int_value = !digitalRead(dev->pin);
+  ButtonGestureState* st = (ButtonGestureState*)dev->state;
 
+  if (st->long_sent) {
+    payload->params[0].int_value = 5;
+    st->long_sent = false;
+    return REQ_ACCEPTED;
+  }
+
+  if (st->tap_count > 0) {
+    payload->params[0].int_value = 1;
+    st->tap_count = 0;
+  } else {
+    payload->params[0].int_value = 0;
+  }
   return REQ_ACCEPTED;
 }

@@ -1,4 +1,5 @@
 #include "system.h"
+#include "hardware_profile.h"
 #include "event.h"
 #include "launcher.h"
 #include "scheduler.h"
@@ -6,12 +7,18 @@
 #include "persistence.h"
 #include "capability.h"
 #include <LittleFS.h>
+#include "fetlink.h"
 
 #include "rgb_led.h"
 #include "oled.h"
 #include "buzzer.h"
 #include "button.h"
 #include "buffer_device.h"
+#include "fetlink_dual.h"
+#include "device_net.h"
+
+#include "display_hal.h"
+#include "driver_ssd1306.h"
 
 #include "app_debug.h"
 #include "app_pomodoro.h"
@@ -20,7 +27,7 @@
 #include "app_buzzer.h"
 #include "app_manager.h"
 
-#define MAX_DEVICES 6
+#define MAX_DEVICES 8
 
 Device devices[MAX_DEVICES];
 int device_count = 0;
@@ -43,14 +50,19 @@ bool is_system_mutating = false;
 static char cmd_buf[128];
 static uint8_t cmd_len = 0;
 
+static RequestResult handle_sys_exit(Device *dev, const RequestPayload *payload, CallerContext *caller)
+{
+  system_set_app(&launcher_app);
+  return REQ_ACCEPTED;
+}
+
+static uint32_t last_rx_time = 0;
 static void task_serial_uploader(void *ctx)
 {
-
   yield();
 
   if (!is_uploading)
   {
-
     while (Serial.available() > 0)
     {
       char c = (char)Serial.read();
@@ -83,6 +95,7 @@ static void task_serial_uploader(void *ctx)
             if (upload_file)
             {
               is_uploading = true;
+              last_rx_time = millis();
               Serial.println("OK");
             }
             else
@@ -105,32 +118,47 @@ static void task_serial_uploader(void *ctx)
   else
   {
 
-    uint8_t buf[64];
-    int avail = Serial.available();
-    if (avail > 0)
+    if (Serial.available() > 0)
     {
-      int to_read = avail > (int)sizeof(buf) ? sizeof(buf) : avail;
-      if (to_read > (int)upload_bytes_remaining)
-        to_read = upload_bytes_remaining;
+      last_rx_time = millis();
 
-      int bytes_read = Serial.readBytes(buf, to_read);
-      if (bytes_read > 0)
+      while (Serial.available() > 0 && upload_bytes_remaining > 0)
       {
-        upload_file.write(buf, bytes_read);
-        upload_bytes_remaining -= bytes_read;
-        yield();
+        uint8_t buf[64];
+        int avail = Serial.available();
+        int to_read = avail > (int)sizeof(buf) ? sizeof(buf) : avail;
+        if (to_read > (int)upload_bytes_remaining)
+          to_read = upload_bytes_remaining;
+
+        int bytes_read = Serial.readBytes(buf, to_read);
+        if (bytes_read > 0)
+        {
+          upload_file.write(buf, bytes_read);
+          upload_bytes_remaining -= bytes_read;
+          yield();
+        }
+      }
+
+      if (upload_bytes_remaining == 0)
+      {
+        upload_file.flush();
+        upload_file.close();
+        is_uploading = false;
+        event_clear();
+        button_reset();
+        Serial.println("DONE");
+        system_discover_fs_apps();
       }
     }
-
-    if (upload_bytes_remaining == 0)
+    else
     {
-      upload_file.flush();
-      upload_file.close();
-      is_uploading = false;
-      event_clear();
-      button_reset();
-      Serial.println("DONE");
-      system_discover_fs_apps();
+
+      if (millis() - last_rx_time > 2000)
+      {
+        upload_file.close();
+        is_uploading = false;
+        Serial.println("ERR_TIMEOUT");
+      }
     }
   }
 }
@@ -223,21 +251,30 @@ static void task_debug_serial(void *ctx)
 
 void system_init()
 {
+  if (!LittleFS.begin(true))
+    Serial.println("[System] error mounting LittleFS");
+
+  hardware_profile_load();
+
   event_init();
   scheduler_init();
   capability_init();
+  system_register_capability("system:exit", handle_sys_exit, nullptr);
 
   Device button = {.id = 1, .pin = 4, .init = button_init, .poll = button_poll, .render = NULL, .on_event = NULL};
   Device oled = {.id = 2, .pin = 0, .init = oled_init, .poll = NULL, .render = oled_render, .on_event = oled_on_event};
   Device buzzer = {.id = 3, .pin = 15, .init = buzzer_init, .poll = NULL, .render = buzzer_render, .on_event = NULL};
   Device rgb = {.id = 4, .pin = 16, .init = rgb_init, .poll = NULL, .render = NULL, .on_event = NULL};
-  Device buffer = {.id = 5, .pin = 0, .init = buffer_device_init, .poll = NULL, .render = NULL, .on_event = NULL};
+  Device button_buffer = {.id = 5, .pin = 0, .init = buffer_device_init, .poll = NULL, .render = NULL, .on_event = NULL};
+  Device net = {.id = 6, .pin = 0, .init = net_device_init, .poll = NULL, .render = NULL, .on_event = NULL};
 
   register_device(button);
   register_device(oled);
   register_device(buzzer);
   register_device(rgb);
-  register_device(buffer);
+  register_device(button_buffer);
+  register_device(net);
+  fetlink_ble_init();
 
   for (int i = 0; i < device_count; i++)
   {
@@ -247,18 +284,21 @@ void system_init()
 
   persistence_init();
   int saved_brightness = persistence_read_int("scr_brt", 255);
-  Device *oled_dev = system_get_device_by_id(2);
-  if (oled_dev && oled_dev->state)
+
+  DisplayDriver *drv = display_hal_get_primary(DISPLAY_DEFAULT_ID);
+  if (drv && drv->set_contrast)
   {
-    OledState *st = (OledState *)oled_dev->state;
-    st->display->ssd1306_command(SSD1306_SETCONTRAST);
-    st->display->ssd1306_command(saved_brightness);
+    drv->set_contrast(drv, (uint8_t)saved_brightness);
   }
 
+  scheduler_add([](void *)
+                { fetlink_tick(); },
+                nullptr, 100, TASK_PRIORITY_LOW, "fetlink");
   scheduler_add(task_events, nullptr, 10, TASK_PRIORITY_HIGH, "events");
   scheduler_add(task_render, nullptr, 33, TASK_PRIORITY_NORMAL, "render");
-  scheduler_add(task_debug_serial, nullptr, 2000, TASK_PRIORITY_LOW, "dbg_serial");
   scheduler_add(task_serial_uploader, nullptr, 50, TASK_PRIORITY_NORMAL, "uploader");
+
+  // scheduler_add(task_debug_serial, nullptr, 2000, TASK_PRIORITY_LOW, "dbg_serial");
 
   app_launcher_setup();
   app_debug_setup();
@@ -267,6 +307,7 @@ void system_init()
   app_settings_setup();
   app_buzzer_setup();
   app_manager_setup();
+
   system_register_app(&app_debug);
   system_register_app(&app_pomodoro);
   system_register_app(&app_clock);
@@ -279,7 +320,6 @@ void system_init()
   system_launch_app(&launcher_app);
   system_focus_app(&launcher_app);
 }
-
 void system_loop()
 {
   scheduler_run();
@@ -392,16 +432,17 @@ void system_render()
   OledState *oled = (OledState *)oled_dev->state;
   oled_clear(oled);
 
+  DisplayDriver *drv = display_hal_get_primary(DISPLAY_DEFAULT_ID);
+
   switch (system_state)
   {
   case SYS_LOCK:
-    Serial.println("[DEBUG] render: SYS_LOCK");
-    ui_center_text(oled, 0, "v0.2", 1);
-    oled->display->setCursor(20, 20);
-    oled->display->setTextSize(3);
-    oled->display->printf("FetOS");
-    oled->display->setTextSize(1);
-    oled->display->printf("32");
+    ui_center_text(oled, 0, "v0.3", 1);
+    if (drv)
+    {
+      hal_text(DISPLAY_DEFAULT_ID, 15, 20, "FetOS", 3);
+      hal_text(DISPLAY_DEFAULT_ID, 105, 20, "32", 1);
+    }
     ui_center_text(oled, 55, "Hold to unlock", 1);
     break;
   case SYS_RUNNING:

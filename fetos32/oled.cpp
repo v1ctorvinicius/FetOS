@@ -1,16 +1,35 @@
-#include "system.h"
 #include "oled.h"
+#include "display_hal.h"
+#include "system.h"
 #include "capability.h"
-#include "Arduino.h"
 #include "fvm_app.h"
+#include "driver_ssd1306.h"
 
 static bool can_draw(CallerContext *caller);
 
-static OledState *get_oled_state(Device *dev)
+static RequestResult handle_number(Device *dev, const RequestPayload *payload, CallerContext *ctx)
 {
-  if (!dev || !dev->state)
-    return nullptr;
-  return (OledState *)dev->state;
+
+  if (!can_draw(ctx))
+    return REQ_IGNORED;
+
+  const RequestParam *pX = payload_get(payload, "x");
+  const RequestParam *pY = payload_get(payload, "y");
+  const RequestParam *pV = payload_get(payload, "v");
+
+  if (!pV)
+    return REQ_IGNORED;
+
+  char buf[16];
+  itoa(pV->int_value, buf, 10);
+
+  hal_text(DISPLAY_DEFAULT_ID,
+           pX ? (int16_t)pX->int_value : 0,
+           pY ? (int16_t)pY->int_value : 0,
+           buf,
+           2);
+
+  return REQ_ACCEPTED;
 }
 
 void oled_set_owner(OledOwner owner)
@@ -18,178 +37,131 @@ void oled_set_owner(OledOwner owner)
   Device *dev = system_get_device_by_id(2);
   if (!dev || !dev->state)
     return;
-
   OledState *st = (OledState *)dev->state;
   st->owner = owner;
   st->frame_ready = false;
-
-  st->display->clearDisplay();
+  hal_clear(DISPLAY_DEFAULT_ID);
 }
 
-static RequestResult handle_text(Device *dev, const RequestPayload *payload, CallerContext *caller)
+static RequestResult handle_text(Device *dev, const RequestPayload *payload,
+                                 CallerContext *caller)
 {
   if (!can_draw(caller))
     return REQ_IGNORED;
-  (void)caller;
-  OledState *oled = get_oled_state(dev);
-  if (!oled)
-    return REQ_NO_DEVICE;
-
   const RequestParam *text = payload_get(payload, "text");
   const RequestParam *x = payload_get(payload, "x");
   const RequestParam *y = payload_get(payload, "y");
   const RequestParam *size = payload_get(payload, "size");
-
   if (!text || !text->str_value)
     return REQ_IGNORED;
-
-  ui_text(oled,
-          x ? (int)x->int_value : 0,
-          y ? (int)y->int_value : 0,
-          text->str_value,
-          size ? (int)size->int_value : 1);
-
+  hal_text(DISPLAY_DEFAULT_ID,
+           x ? (int16_t)x->int_value : 0,
+           y ? (int16_t)y->int_value : 0,
+           text->str_value,
+           size ? (uint8_t)size->int_value : 1);
   return REQ_ACCEPTED;
 }
 
-static RequestResult handle_text_center(Device *dev, const RequestPayload *payload, CallerContext *caller)
+static RequestResult handle_text_center(Device *dev, const RequestPayload *payload,
+                                        CallerContext *caller)
 {
   if (!can_draw(caller))
     return REQ_IGNORED;
-  (void)caller;
-  OledState *oled = get_oled_state(dev);
-  if (!oled)
-    return REQ_NO_DEVICE;
-
   const RequestParam *text = payload_get(payload, "text");
   const RequestParam *y = payload_get(payload, "y");
   const RequestParam *size = payload_get(payload, "size");
-
   if (!text || !text->str_value)
     return REQ_IGNORED;
-
-  ui_center_text(oled,
-                 y ? (int)y->int_value : 0,
-                 text->str_value,
-                 size ? (int)size->int_value : 1);
-
+  hal_text_center(DISPLAY_DEFAULT_ID,
+                  y ? (int16_t)y->int_value : 0,
+                  text->str_value,
+                  size ? (uint8_t)size->int_value : 1);
   return REQ_ACCEPTED;
 }
 
-static RequestResult handle_text_invert(Device *dev, const RequestPayload *payload, CallerContext *caller)
+static RequestResult handle_text_invert(Device *dev, const RequestPayload *payload,
+                                        CallerContext *caller)
 {
   if (!can_draw(caller))
     return REQ_IGNORED;
-  (void)caller;
-  OledState *oled = get_oled_state(dev);
-  if (!oled)
-    return REQ_NO_DEVICE;
-
   const RequestParam *text = payload_get(payload, "text");
   const RequestParam *x = payload_get(payload, "x");
   const RequestParam *y = payload_get(payload, "y");
   const RequestParam *size = payload_get(payload, "size");
-
   if (!text || !text->str_value)
     return REQ_IGNORED;
-
-  ui_text_invert(oled,
-                 x ? (int)x->int_value : 0,
-                 y ? (int)y->int_value : 0,
-                 text->str_value,
-                 size ? (int)size->int_value : 1);
-
+  hal_text_invert(DISPLAY_DEFAULT_ID,
+                  x ? (int16_t)x->int_value : 0,
+                  y ? (int16_t)y->int_value : 0,
+                  text->str_value,
+                  size ? (uint8_t)size->int_value : 1);
   return REQ_ACCEPTED;
 }
 
-static RequestResult handle_clear(Device *dev, const RequestPayload *payload, CallerContext *caller)
+static RequestResult handle_clear(Device *dev, const RequestPayload *payload,
+                                  CallerContext *caller)
 {
   if (!can_draw(caller))
     return REQ_IGNORED;
-  OledState *oled = get_oled_state(dev);
-  if (!oled)
-    return REQ_NO_DEVICE;
-  oled_clear(oled);
-  oled->frame_ready = false;
+  OledState *st = (OledState *)dev->state;
+  hal_clear(DISPLAY_DEFAULT_ID);
+  st->frame_ready = false;
   return REQ_ACCEPTED;
 }
 
-static RequestResult handle_flush(Device *dev, const RequestPayload *payload, CallerContext *caller)
+static RequestResult handle_flush(Device *dev, const RequestPayload *payload,
+                                  CallerContext *caller)
 {
-  OledState *oled = get_oled_state(dev);
-  if (!oled)
+  OledState *st = (OledState *)dev->state;
+  if (!st)
     return REQ_NO_DEVICE;
-
   if (caller && caller->type == CALLER_FVM)
   {
     if (!can_draw(caller))
       return REQ_IGNORED;
-
-    oled->display->display();
-    oled->frame_ready = false;
   }
-  else
-  {
-    oled_flush(oled);
-  }
-
+  hal_flush(DISPLAY_DEFAULT_ID);
   return REQ_ACCEPTED;
 }
 
-static RequestResult handle_rect(Device *dev, const RequestPayload *payload, CallerContext *caller)
+static RequestResult handle_rect(Device *dev, const RequestPayload *payload,
+                                 CallerContext *caller)
 {
   if (!can_draw(caller))
     return REQ_IGNORED;
-  OledState *oled = get_oled_state(dev);
-  if (!oled)
-    return REQ_NO_DEVICE;
-
   const RequestParam *x = payload_get(payload, "x");
   const RequestParam *y = payload_get(payload, "y");
   const RequestParam *w = payload_get(payload, "w");
   const RequestParam *h = payload_get(payload, "h");
   const RequestParam *fill = payload_get(payload, "fill");
-
-  int _x = x ? x->int_value : 0;
-  int _y = y ? y->int_value : 0;
-  int _w = w ? w->int_value : 10;
-  int _h = h ? h->int_value : 10;
-  bool _fill = fill ? (fill->int_value != 0) : true;
-
-  if (_fill)
-    oled->display->fillRect(_x, _y, _w, _h, SSD1306_WHITE);
-  else
-    oled->display->drawRect(_x, _y, _w, _h, SSD1306_WHITE);
-
+  hal_rect(DISPLAY_DEFAULT_ID,
+           x ? (int16_t)x->int_value : 0,
+           y ? (int16_t)y->int_value : 0,
+           w ? (int16_t)w->int_value : 10,
+           h ? (int16_t)h->int_value : 10,
+           fill ? (fill->int_value != 0) : true);
   return REQ_ACCEPTED;
 }
 
-static RequestResult handle_list_scroll(Device *dev, const RequestPayload *payload, CallerContext *caller)
+static RequestResult handle_list_scroll(Device *dev, const RequestPayload *payload,
+                                        CallerContext *caller)
 {
   if (!can_draw(caller))
     return REQ_IGNORED;
-  OledState *oled = get_oled_state(dev);
-  if (!oled)
-    return REQ_NO_DEVICE;
-
   const RequestParam *selected = payload_get(payload, "selected");
   const RequestParam *start_y = payload_get(payload, "start_y");
   const RequestParam *visible = payload_get(payload, "visible");
   const RequestParam *items_p = payload_get(payload, "items");
-
   if (!items_p || !items_p->str_value)
     return REQ_IGNORED;
 
   static const char *item_ptrs[32];
   static char item_buf[512];
-
   strncpy(item_buf, items_p->str_value, sizeof(item_buf) - 1);
   item_buf[sizeof(item_buf) - 1] = '\0';
-
   int count = 0;
   char *cursor = item_buf;
   item_ptrs[count++] = cursor;
-
   while (*cursor && count < 32)
   {
     if (*cursor == '\n')
@@ -200,59 +172,11 @@ static RequestResult handle_list_scroll(Device *dev, const RequestPayload *paylo
     }
     cursor++;
   }
-
-  ui_list_scroll(oled,
-                 item_ptrs, count,
-                 selected ? (int)selected->int_value : 0,
-                 start_y ? (int)start_y->int_value : 0,
-                 visible ? (int)visible->int_value : 0);
-
-  return REQ_ACCEPTED;
-}
-
-static RequestResult handle_text_scroll(Device *dev, const RequestPayload *payload, CallerContext *caller)
-{
-  if (!can_draw(caller))
-    return REQ_IGNORED;
-  OledState *oled = get_oled_state(dev);
-  if (!oled)
-    return REQ_NO_DEVICE;
-
-  const RequestParam *scroll = payload_get(payload, "scroll");
-  const RequestParam *start_y = payload_get(payload, "start_y");
-  const RequestParam *visible = payload_get(payload, "visible");
-  const RequestParam *items_p = payload_get(payload, "items");
-
-  if (!items_p || !items_p->str_value)
-    return REQ_IGNORED;
-
-  static const char *item_ptrs[32];
-  static char item_buf[512];
-
-  strncpy(item_buf, items_p->str_value, sizeof(item_buf) - 1);
-  item_buf[sizeof(item_buf) - 1] = '\0';
-
-  int count = 0;
-  char *cursor = item_buf;
-  item_ptrs[count++] = cursor;
-
-  while (*cursor && count < 32)
-  {
-    if (*cursor == '\n')
-    {
-      *cursor = '\0';
-      if (*(cursor + 1))
-        item_ptrs[count++] = cursor + 1;
-    }
-    cursor++;
-  }
-
-  ui_text_scroll(oled,
-                 item_ptrs, count,
-                 scroll ? (int)scroll->int_value : 0,
-                 start_y ? (int)start_y->int_value : 0,
-                 visible ? (int)visible->int_value : 0);
-
+  hal_list_scroll(DISPLAY_DEFAULT_ID,
+                  item_ptrs, count,
+                  selected ? (int)selected->int_value : 0,
+                  start_y ? (int)start_y->int_value : 0,
+                  visible ? (int)visible->int_value : 0);
   return REQ_ACCEPTED;
 }
 
@@ -261,13 +185,9 @@ void oled_init(Device *dev)
   OledState *st = (OledState *)malloc(sizeof(OledState));
   if (!st)
     return;
-
-  st->display = new Adafruit_SSD1306(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
-  st->display->begin(SSD1306_SWITCHCAPVCC, 0x3C);
   st->dirty = false;
   st->owner = OLED_OWNER_KERNEL;
   st->frame_ready = false;
-
   dev->state = st;
 
   system_register_capability("display:text", handle_text, dev);
@@ -277,7 +197,7 @@ void oled_init(Device *dev)
   system_register_capability("display:flush", handle_flush, dev);
   system_register_capability("display:rect", handle_rect, dev);
   system_register_capability("display:list_scroll", handle_list_scroll, dev);
-  system_register_capability("display:text_scroll", handle_text_scroll, dev);
+  system_register_capability("display:number", handle_number, dev);
 }
 
 void oled_render(Device *dev)
@@ -288,7 +208,6 @@ void oled_render(Device *dev)
 
   if (st->owner == OLED_OWNER_FVM)
   {
-
     bool fvm_dead = false;
     if (!current_app || !current_app->update_ctx)
     {
@@ -300,7 +219,6 @@ void oled_render(Device *dev)
       if (!fctx->proc || fctx->proc->error)
         fvm_dead = true;
     }
-
     if (fvm_dead)
     {
       st->owner = OLED_OWNER_KERNEL;
@@ -317,163 +235,51 @@ void oled_render(Device *dev)
 
 void oled_on_event(Device *dev, Event *e) {}
 
-void oled_show_boot_screen(OledState *st)
-{
-  st->display->clearDisplay();
-  st->display->setTextColor(SSD1306_WHITE);
-  st->display->setTextSize(1);
-  st->display->setCursor(100, 0);
-  st->display->println("v0.1");
-  st->display->setCursor(20, 17);
-  st->display->setTextSize(3);
-  st->display->printf("FetOS");
-  st->display->setTextSize(1);
-  st->display->printf("32");
-  st->display->setCursor(5, 50);
-  st->display->setTextSize(1);
-  st->display->println("Long press to unlock");
-  st->display->display();
-}
-
 void oled_clear(OledState *st)
 {
-  if (!st || !st->display)
-    return;
-  st->display->clearDisplay();
+  hal_clear(DISPLAY_DEFAULT_ID);
 }
-
 void oled_flush(OledState *st)
 {
-  if (!st || !st->display)
-    return;
-  st->display->display();
+  hal_flush(DISPLAY_DEFAULT_ID);
 }
 
 void ui_text(OledState *st, int x, int y, const char *text, int size)
 {
-  st->display->setTextSize(size);
-  st->display->setTextColor(SSD1306_WHITE);
-  st->display->setCursor(x, y);
-  st->display->print(text);
+  hal_text(DISPLAY_DEFAULT_ID, x, y, text, size);
 }
-
 void ui_text_invert(OledState *st, int x, int y, const char *text, int size)
 {
-  st->display->setTextSize(size);
-  st->display->setTextColor(SSD1306_BLACK, SSD1306_WHITE);
-  st->display->setCursor(x, y);
-  st->display->print(text);
-  st->display->setTextColor(SSD1306_WHITE);
+  hal_text_invert(DISPLAY_DEFAULT_ID, x, y, text, size);
 }
-
 void ui_center_text(OledState *st, int y, const char *text, int size)
 {
-  int16_t x1, y1;
-  uint16_t w, h;
-  st->display->setTextSize(size);
-  st->display->getTextBounds(text, 0, 0, &x1, &y1, &w, &h);
-  int x = (SCREEN_WIDTH - w) / 2;
-  ui_text(st, x, y, text, size);
+  hal_text_center(DISPLAY_DEFAULT_ID, y, text, size);
 }
-
-void ui_list_scroll(OledState *st, const char **items, int count, int selected, int start_y, int visible)
+void ui_list_scroll(OledState *st, const char **items, int count,
+                    int selected, int start_y, int visible)
 {
-  int item_height = 10;
-  if (visible <= 0)
-    visible = (SCREEN_HEIGHT - start_y) / item_height;
-
-  if (count <= visible)
-  {
-    int y = start_y;
-    for (int i = 0; i < count; i++)
-    {
-      if (i == selected)
-        ui_text_invert(st, 0, y, items[i], 1);
-      else
-        ui_text(st, 0, y, items[i], 1);
-      y += item_height;
-    }
-    return;
-  }
-
-  int start = selected - (visible / 2);
-  if (start < 0)
-    start = 0;
-  if (start > count - visible)
-    start = count - visible;
-
-  int y = start_y;
-  for (int i = 0; i < visible; i++)
-  {
-    int idx = start + i;
-    if (idx >= count)
-      break;
-    if (idx == selected)
-      ui_text_invert(st, 0, y, items[idx], 1);
-    else
-      ui_text(st, 0, y, items[idx], 1);
-    y += item_height;
-  }
-}
-
-void ui_text_scroll(OledState *st, const char **items, int count, int scroll_offset, int start_y, int visible)
-{
-  int item_height = 10;
-  if (visible <= 0)
-    visible = (SCREEN_HEIGHT - start_y) / item_height;
-
-  int start_idx = scroll_offset;
-  if (start_idx > count - visible)
-    start_idx = count - visible;
-  if (start_idx < 0)
-    start_idx = 0;
-
-  int y = start_y;
-  for (int i = 0; i < visible; i++)
-  {
-    int idx = start_idx + i;
-    if (idx >= count)
-      break;
-    ui_text(st, 0, y, items[idx], 1);
-    y += item_height;
-  }
-
-  if (count > visible)
-  {
-    int bar_h = (visible * visible * item_height) / count;
-    if (bar_h < 3)
-      bar_h = 3;
-    int max_scroll = count - visible;
-    int bar_y = start_y + ((start_idx * (visible * item_height - bar_h)) / max_scroll);
-    st->display->fillRect(126, bar_y, 2, bar_h, SSD1306_WHITE);
-  }
+  hal_list_scroll(DISPLAY_DEFAULT_ID, items, count, selected, start_y, visible);
 }
 
 static bool can_draw(CallerContext *caller)
 {
-
   if (!caller)
     return true;
-
   Device *dev = system_get_device_by_id(2);
   if (!dev || !dev->state)
     return false;
   OledState *st = (OledState *)dev->state;
 
   if (st->owner == OLED_OWNER_KERNEL)
-  {
     return (caller->type != CALLER_FVM);
-  }
 
   if (caller->type == CALLER_FVM)
   {
     if (!current_app || !current_app->update_ctx)
       return false;
-
     FvmAppContext *fctx = (FvmAppContext *)current_app->update_ctx;
-
     return (caller->fvm_proc == (void *)fctx->proc);
   }
-
   return true;
 }
