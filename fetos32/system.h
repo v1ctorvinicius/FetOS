@@ -7,7 +7,7 @@
 #include "fvm_process.h"
 #include "fvm_app.h"
 
-#define MAX_APPS 8
+#define MAX_APPS 10
 
 enum SystemState
 {

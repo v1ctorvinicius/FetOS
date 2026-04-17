@@ -2,143 +2,155 @@
 #include <Arduino.h>
 #include "capability.h"
 
+// ── versão do formato .fvm ────────────────────────────────────
+#define FVM_FORMAT_V1 "FVM1"   // legado — stack/heap fixos
+#define FVM_FORMAT_V2 "FVM2"   // novo — header dinâmico
+
 // ── opcodes ───────────────────────────────────────────────────
 
-typedef enum : uint8_t
-{
-  // stack
-  OP_PUSH_INT = 0x01,  // [i16]     empilha inteiro
-  OP_PUSH_STR = 0x02,  // [u8]      empilha string por índice
-  OP_PUSH_BOOL = 0x03, // [u8]      empilha bool (0/1)
-  OP_PUSH_NIL = 0x04,  // —         empilha nil
-  OP_POP = 0x05,       // —         descarta topo
-
-  // heap (variáveis locais — slots de 4 bytes)
-  OP_STORE_H = 0x10, // [u8]      pop → heap[idx]
-  OP_LOAD_H = 0x11,  // [u8]      heap[idx] → push
-
-  // aritmética
-  OP_ADD = 0x20, // —
-  OP_SUB = 0x21, // —
-  OP_MUL = 0x22, // —
-  OP_DIV = 0x23, // —
-
-  // comparação (push VAL_BOOL)
-  OP_EQ = 0x30,  // —
-  OP_LT = 0x31,  // —
-  OP_GT = 0x32,  // —
-  OP_AND = 0x33, // —
-  OP_OR = 0x34,  // —
-  OP_NOT = 0x35, // —         inverte topo bool
-
-  // controle de fluxo
-  OP_JMP = 0x40,  // [u16]     salta para endereço absoluto
-  OP_JIF = 0x41,  // [u16]     salta se topo == true
-  OP_JNIF = 0x42, // [u16]     salta se topo == false
-  OP_CALL = 0x43, // [u16]     push PC na call stack, JMP
-  OP_RET = 0x44,  // —         pop call stack, JMP
-  OP_HALT = 0x45, // —         para execução
-
-  // sistema
-  OP_SYS_REQ = 0x50, // [u8 cap_idx][u8 n_params]
-                     // monta payload com n_params pares (key_idx, val) da stack
-                     // sempre empilha resultado (VAL_INT com RequestResult ou valor)
-  OP_SYS_EVT = 0x51, // [u8 type]  empurra evento no barramento
-
-  // persistência
-  OP_STORE_P = 0x60, // [u8 key_idx]   persiste topo com chave da string_table[idx]
-  OP_LOAD_P = 0x61,  // [u8 key_idx]   carrega valor persistido → push
+typedef enum : uint8_t {
+  OP_PUSH_INT  = 0x01,
+  OP_PUSH_STR  = 0x02,
+  OP_PUSH_BOOL = 0x03,
+  OP_PUSH_NIL  = 0x04,
+  OP_POP       = 0x05,
+  OP_DUP       = 0x06,
+  OP_STORE_H   = 0x10,
+  OP_LOAD_H    = 0x11,
+  OP_ADD       = 0x20,
+  OP_SUB       = 0x21,
+  OP_MUL       = 0x22,
+  OP_DIV       = 0x23,
+  OP_EQ        = 0x30,
+  OP_LT        = 0x31,
+  OP_GT        = 0x32,
+  OP_AND       = 0x33,
+  OP_OR        = 0x34,
+  OP_NOT       = 0x35,
+  OP_JMP       = 0x40,
+  OP_JIF       = 0x41,
+  OP_JNIF      = 0x42,
+  OP_CALL      = 0x43,
+  OP_RET       = 0x44,
+  OP_HALT      = 0x45,
+  OP_SYS_REQ   = 0x50,
+  OP_SYS_EVT   = 0x51,
+  OP_STORE_P   = 0x60,
+  OP_LOAD_P    = 0x61,
 } FvmOpcode;
 
-typedef enum : uint8_t
-{
-  VAL_INT,
-  VAL_BOOL,
-  VAL_STRING,
-  VAL_NIL
+// ── tipos de valor ────────────────────────────────────────────
+
+typedef enum : uint8_t {
+  VAL_INT, VAL_BOOL, VAL_STRING, VAL_NIL
 } ValType;
 
-typedef struct
-{
+typedef struct {
   ValType type;
-  union
-  {
-    int32_t i;
-    bool b;
-    uint8_t str_idx;
-  };
+  union { int32_t i; bool b; uint8_t str_idx; };
 } Val;
+
+// ── capability state ──────────────────────────────────────────
 
 #define MAX_CAPABILITY_STATES 8
 
-typedef struct
-{
-  const char *capability;
-  void *data;
+typedef struct {
+  const char* capability;
+  void*       data;
 } CapabilityState;
 
-#define FVM_STACK_SIZE 16
-#define FVM_CALL_STACK_SIZE 8
-#define FVM_HEAP_SLOTS 16
+// ── limites padrão (FVM1 legado) ─────────────────────────────
+#define FVM_STACK_SIZE_DEFAULT      16
+#define FVM_CALL_STACK_SIZE_DEFAULT  8
+#define FVM_HEAP_SLOTS_DEFAULT      16
 
-typedef struct
-{
+// ── limites máximos (FVM2) ────────────────────────────────────
+#define FVM_STACK_SIZE_MAX      64
+#define FVM_CALL_STACK_SIZE_MAX 32
+#define FVM_HEAP_SLOTS_MAX     128
+#define FVM_RAM_REQ_MAX      49152   // 48KB — teto razoável no ESP32
 
-  const uint8_t *bytecode;
-  uint16_t bytecode_len;
-  uint16_t pc;
+// ── processo FVM ──────────────────────────────────────────────
 
-  Val stack[FVM_STACK_SIZE];
-  uint8_t sp;
+typedef struct {
+  // bytecode
+  const uint8_t* bytecode;
+  uint16_t       bytecode_len;
+  uint16_t       pc;
 
-  uint16_t call_stack[FVM_CALL_STACK_SIZE];
-  uint8_t csp; // call stack pointer
+  // stack dinâmica — alocada no create, liberada no destroy
+  Val*     stack;
+  uint16_t stack_size;   // capacidade real alocada
+  uint16_t sp;
 
-  int32_t heap[FVM_HEAP_SLOTS];
+  // call stack dinâmica
+  uint16_t* call_stack;
+  uint8_t   call_stack_size;
+  uint8_t   csp;
 
-  const char **string_table;
-  uint8_t n_strings;
+  // heap dinâmico
+  int32_t* heap;
+  uint8_t  heap_slots;
 
+  // string table
+  const char** string_table;
+  uint8_t      n_strings;
+
+  // execução
   uint16_t steps_per_quantum;
-  bool halted;
-  bool error;
-  uint8_t error_code;
+  bool     halted;
+  bool     error;
+  uint8_t  error_code;
 
-  // bit 0: audio, bit 1: display, bit 2: led, bit 3: buffer, bit 4: net
+  // permissões
   uint8_t permissions;
 
-  // lazy allocated
+  // capability states
   CapabilityState cap_states[MAX_CAPABILITY_STATES];
-  uint8_t n_cap_states;
+  uint8_t         n_cap_states;
 
-  const char *name;
-  uint8_t process_id;
+  // metadados
+  const char* name;
+  uint8_t     process_id;
+
+  // FVM2: RAM alocada dinamicamente para stack+heap+call_stack
+  // nullptr em FVM1 (memória estática legado não suportada — FVM1 usa defaults dinâmicos também)
+  void*    arena;          // bloco único: stack | call_stack | heap
+  uint16_t arena_size;     // tamanho total do bloco
 } FvmProcess;
 
-typedef enum : uint8_t
-{
-  FVM_ERR_NONE = 0,
-  FVM_ERR_STACK_OVER = 1,  // data stack overflow
-  FVM_ERR_STACK_UNDER = 2, // data stack underflow
-  FVM_ERR_CALL_OVER = 3,   // call stack overflow
-  FVM_ERR_CALL_UNDER = 4,  // call stack underflow
-  FVM_ERR_DIV_ZERO = 5,
-  FVM_ERR_BAD_TYPE = 6, // operação em tipo errado
-  FVM_ERR_BAD_OP = 7,   // opcode desconhecido
-  FVM_ERR_OOB = 8,      // acesso fora dos limites (heap, string_table)
-  FVM_ERR_OOM = 9,      // sem memória para capability state
+// ── erros de runtime ──────────────────────────────────────────
+
+typedef enum : uint8_t {
+  FVM_ERR_NONE        = 0,
+  FVM_ERR_STACK_OVER  = 1,
+  FVM_ERR_STACK_UNDER = 2,
+  FVM_ERR_CALL_OVER   = 3,
+  FVM_ERR_CALL_UNDER  = 4,
+  FVM_ERR_DIV_ZERO    = 5,
+  FVM_ERR_BAD_TYPE    = 6,
+  FVM_ERR_BAD_OP      = 7,
+  FVM_ERR_OOB         = 8,
+  FVM_ERR_OOM         = 9,
 } FvmError;
 
 // ── API ───────────────────────────────────────────────────────
 
-FvmProcess *fvm_process_create(const char *name, const uint8_t *bytecode, uint16_t len);
-void fvm_process_destroy(FvmProcess *proc);
+// Cria processo com tamanhos customizados (FVM2)
+FvmProcess* fvm_process_create_ex(const char* name,
+                                   const uint8_t* bytecode, uint16_t len,
+                                   uint16_t stack_size,
+                                   uint8_t  call_stack_size,
+                                   uint8_t  heap_slots);
 
-void fvm_run(FvmProcess *proc);
+// Cria processo com defaults (compatibilidade FVM1)
+FvmProcess* fvm_process_create(const char* name,
+                                const uint8_t* bytecode, uint16_t len);
 
-void **fvm_get_cap_state(FvmProcess *proc, const char *capability);
-CallerContext fvm_make_caller(FvmProcess *proc, const char *capability);
-
-FvmProcess *fvm_load_from_memory(const char *name, const uint8_t *data, uint16_t total_len);
-
-void fvm_process_reset(FvmProcess *proc);
+void fvm_process_destroy(FvmProcess* proc);
+void fvm_run(FvmProcess* proc);
+void** fvm_get_cap_state(FvmProcess* proc, const char* capability);
+CallerContext fvm_make_caller(FvmProcess* proc, const char* capability);
+FvmProcess* fvm_load_from_memory(const char* name,
+                                  const uint8_t* data, uint16_t total_len);
+void fvm_process_reset(FvmProcess* proc);

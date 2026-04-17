@@ -19,6 +19,7 @@ bool event_push(Event e) {
   Serial.println(e.has_payload ? "true" : "false");
   Serial.print(F(" | Value: "));
   Serial.print(e.payload.value);
+  Serial.println("");
 
   int next = (head + 1) % EVENT_QUEUE_SIZE;
   if (next == tail) return false;

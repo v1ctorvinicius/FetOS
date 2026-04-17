@@ -11,7 +11,7 @@
 #define FETLINK_PAYLOAD_MAX  128
 #define FETLINK_FRAME_MAX    136    // header + payload + csum
 #define FETLINK_SEEN_CACHE    32    // últimos N pares (src, seq) vistos
-#define FETLINK_FRAG_BUF_MAX 512   // buffer de reassembly de fragmentos
+#define FETLINK_FRAG_BUF_MAX 2048   // buffer de reassembly de fragmentos
 
 // ── timeouts (ms) ─────────────────────────────────────────────
 #define FETLINK_FRAME_TIMEOUT      100
@@ -64,6 +64,11 @@ typedef struct {
 } FetLinkParser;
 
 // ── reassembly de fragmentos ──────────────────────────────────
+// received_mask: bitmask de 64 bits — bit N = fragmento N recebido.
+// Cobre até 64 fragmentos × 128 bytes = 8192 bytes por mensagem.
+// last_frag_idx: índice do fragmento marcado como LAST (0xFF = ainda não chegou).
+// Quando o fragmento LAST chega: verifica se todos os bits 0..last_frag_idx
+// estão setados. Se não → fragmento perdido → aborta sem chamar on_receive.
 typedef struct {
   bool     active;
   uint8_t  src;
@@ -71,6 +76,8 @@ typedef struct {
   uint8_t  buf[FETLINK_FRAG_BUF_MAX];
   uint16_t total_len;
   uint32_t last_activity_ms;
+  uint64_t received_mask;   // bit N = fragmento N foi recebido
+  uint8_t  last_frag_idx;   // índice do frag LAST (0xFF = não chegou ainda)
 } FetLinkReassembly;
 
 // ── callback de recepção ──────────────────────────────────────

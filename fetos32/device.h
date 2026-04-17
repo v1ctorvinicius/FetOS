@@ -12,6 +12,7 @@ typedef void (*DeviceOnEvent)(Device*, Event*);
 struct Device {
   uint8_t id;
   uint8_t pin;
+  uint8_t type;
 
   DeviceInit init;
   DevicePoll poll;

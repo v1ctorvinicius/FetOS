@@ -1,3 +1,4 @@
+//oled.cpp
 #include "oled.h"
 #include "display_hal.h"
 #include "system.h"
@@ -7,8 +8,76 @@
 
 static bool can_draw(CallerContext *caller);
 
-static RequestResult handle_number(Device *dev, const RequestPayload *payload, CallerContext *ctx)
-{
+// display:textbuf  x(int), y(int)
+static RequestResult handle_textbuf(Device *dev, const RequestPayload *payload, CallerContext *ctx) {
+  if (!can_draw(ctx)) return REQ_IGNORED;
+
+  // Busca o ID 7 direto (que é o que você registrou no system_init)
+  Device *tb_dev = system_get_device_by_id(7); 
+  
+  if (!tb_dev || !tb_dev->state) {
+    Serial.println("❌ [OLED] Erro: Device ID 7 (TextBuf) não encontrado ou sem estado!");
+    return REQ_NO_DEVICE;
+  }
+
+  // DEFINIÇÃO CRÍTICA: Garanta que esta struct é IDÊNTICA ao seu driver_textbuf.h
+  struct TextBufState {
+    uint8_t *data;
+    size_t size;
+    size_t capacity;
+  };
+  TextBufState *st = (TextBufState *)tb_dev->state;
+
+  // DEBUG VIA SERIAL
+  Serial.printf("[OLED] TextBuf detectado: Size=%d, Ptr=%p\n", st->size, st->data);
+
+  if (!st->data || st->size == 0) {
+    Serial.println("⚠️ [OLED] Buffer vazio, nada para desenhar.");
+    return REQ_ACCEPTED;
+  }
+
+  const RequestParam *pX = payload_get(payload, "x");
+  const RequestParam *pY = payload_get(payload, "y");
+
+  char *tmp = (char *)malloc(st->size + 1);
+  if (tmp) {
+    memcpy(tmp, st->data, st->size);
+    tmp[st->size] = '\0';
+    
+    Serial.printf("✅ [OLED] Desenhando no display: %s\n", tmp);
+
+    hal_text(DISPLAY_DEFAULT_ID,
+             pX ? (int16_t)pX->int_value : 0,
+             pY ? (int16_t)pY->int_value : 18,
+             tmp, 1);
+    free(tmp);
+  }
+
+  return REQ_ACCEPTED;
+}
+
+static RequestResult handle_char(Device *dev, const RequestPayload *payload, CallerContext *ctx) {
+  if (!can_draw(ctx)) return REQ_IGNORED;
+  const RequestParam *pX = payload_get(payload, "x");
+  const RequestParam *pY = payload_get(payload, "y");
+  const RequestParam *pC = payload_get(payload, "char");
+  const RequestParam *pS = payload_get(payload, "size");
+  if (!pC) return REQ_IGNORED;
+
+  char buf[2];
+  buf[0] = (char)pC->int_value;
+  buf[1] = '\0';
+
+  hal_text(DISPLAY_DEFAULT_ID,
+           pX ? (int16_t)pX->int_value : 0,
+           pY ? (int16_t)pY->int_value : 0,
+           buf,
+           pS ? (uint8_t)pS->int_value : 1);
+  return REQ_ACCEPTED;
+}
+
+
+static RequestResult handle_number(Device *dev, const RequestPayload *payload, CallerContext *ctx) {
 
   if (!can_draw(ctx))
     return REQ_IGNORED;
@@ -32,8 +101,7 @@ static RequestResult handle_number(Device *dev, const RequestPayload *payload, C
   return REQ_ACCEPTED;
 }
 
-void oled_set_owner(OledOwner owner)
-{
+void oled_set_owner(OledOwner owner) {
   Device *dev = system_get_device_by_id(2);
   if (!dev || !dev->state)
     return;
@@ -44,8 +112,7 @@ void oled_set_owner(OledOwner owner)
 }
 
 static RequestResult handle_text(Device *dev, const RequestPayload *payload,
-                                 CallerContext *caller)
-{
+                                 CallerContext *caller) {
   if (!can_draw(caller))
     return REQ_IGNORED;
   const RequestParam *text = payload_get(payload, "text");
@@ -63,8 +130,7 @@ static RequestResult handle_text(Device *dev, const RequestPayload *payload,
 }
 
 static RequestResult handle_text_center(Device *dev, const RequestPayload *payload,
-                                        CallerContext *caller)
-{
+                                        CallerContext *caller) {
   if (!can_draw(caller))
     return REQ_IGNORED;
   const RequestParam *text = payload_get(payload, "text");
@@ -80,8 +146,7 @@ static RequestResult handle_text_center(Device *dev, const RequestPayload *paylo
 }
 
 static RequestResult handle_text_invert(Device *dev, const RequestPayload *payload,
-                                        CallerContext *caller)
-{
+                                        CallerContext *caller) {
   if (!can_draw(caller))
     return REQ_IGNORED;
   const RequestParam *text = payload_get(payload, "text");
@@ -99,8 +164,7 @@ static RequestResult handle_text_invert(Device *dev, const RequestPayload *paylo
 }
 
 static RequestResult handle_clear(Device *dev, const RequestPayload *payload,
-                                  CallerContext *caller)
-{
+                                  CallerContext *caller) {
   if (!can_draw(caller))
     return REQ_IGNORED;
   OledState *st = (OledState *)dev->state;
@@ -110,13 +174,11 @@ static RequestResult handle_clear(Device *dev, const RequestPayload *payload,
 }
 
 static RequestResult handle_flush(Device *dev, const RequestPayload *payload,
-                                  CallerContext *caller)
-{
+                                  CallerContext *caller) {
   OledState *st = (OledState *)dev->state;
   if (!st)
     return REQ_NO_DEVICE;
-  if (caller && caller->type == CALLER_FVM)
-  {
+  if (caller && caller->type == CALLER_FVM) {
     if (!can_draw(caller))
       return REQ_IGNORED;
   }
@@ -125,8 +187,7 @@ static RequestResult handle_flush(Device *dev, const RequestPayload *payload,
 }
 
 static RequestResult handle_rect(Device *dev, const RequestPayload *payload,
-                                 CallerContext *caller)
-{
+                                 CallerContext *caller) {
   if (!can_draw(caller))
     return REQ_IGNORED;
   const RequestParam *x = payload_get(payload, "x");
@@ -144,8 +205,7 @@ static RequestResult handle_rect(Device *dev, const RequestPayload *payload,
 }
 
 static RequestResult handle_list_scroll(Device *dev, const RequestPayload *payload,
-                                        CallerContext *caller)
-{
+                                        CallerContext *caller) {
   if (!can_draw(caller))
     return REQ_IGNORED;
   const RequestParam *selected = payload_get(payload, "selected");
@@ -162,10 +222,8 @@ static RequestResult handle_list_scroll(Device *dev, const RequestPayload *paylo
   int count = 0;
   char *cursor = item_buf;
   item_ptrs[count++] = cursor;
-  while (*cursor && count < 32)
-  {
-    if (*cursor == '\n')
-    {
+  while (*cursor && count < 32) {
+    if (*cursor == '\n') {
       *cursor = '\0';
       if (*(cursor + 1))
         item_ptrs[count++] = cursor + 1;
@@ -180,8 +238,7 @@ static RequestResult handle_list_scroll(Device *dev, const RequestPayload *paylo
   return REQ_ACCEPTED;
 }
 
-void oled_init(Device *dev)
-{
+void oled_init(Device *dev) {
   OledState *st = (OledState *)malloc(sizeof(OledState));
   if (!st)
     return;
@@ -198,35 +255,19 @@ void oled_init(Device *dev)
   system_register_capability("display:rect", handle_rect, dev);
   system_register_capability("display:list_scroll", handle_list_scroll, dev);
   system_register_capability("display:number", handle_number, dev);
+  system_register_capability("display:char", handle_char, dev);
 }
 
-void oled_render(Device *dev)
-{
+void oled_render(Device *dev) {
   if (!dev || !dev->state)
     return;
   OledState *st = (OledState *)dev->state;
 
-  if (st->owner == OLED_OWNER_FVM)
-  {
-    bool fvm_dead = false;
-    if (!current_app || !current_app->update_ctx)
-    {
-      fvm_dead = true;
-    }
-    else
-    {
-      FvmAppContext *fctx = (FvmAppContext *)current_app->update_ctx;
-      if (!fctx->proc || fctx->proc->error)
-        fvm_dead = true;
-    }
-    if (fvm_dead)
-    {
+  if (st->owner == OLED_OWNER_FVM) {
+    // verifica se o app crashou para devolver o controle
+    FvmAppContext *fctx = (FvmAppContext *)current_app->update_ctx;
+    if (!fctx || !fctx->proc || fctx->proc->error) {
       st->owner = OLED_OWNER_KERNEL;
-      st->frame_ready = false;
-    }
-    else
-    {
-      return;
     }
   }
 
@@ -235,35 +276,28 @@ void oled_render(Device *dev)
 
 void oled_on_event(Device *dev, Event *e) {}
 
-void oled_clear(OledState *st)
-{
+void oled_clear(OledState *st) {
   hal_clear(DISPLAY_DEFAULT_ID);
 }
-void oled_flush(OledState *st)
-{
+void oled_flush(OledState *st) {
   hal_flush(DISPLAY_DEFAULT_ID);
 }
 
-void ui_text(OledState *st, int x, int y, const char *text, int size)
-{
+void ui_text(OledState *st, int x, int y, const char *text, int size) {
   hal_text(DISPLAY_DEFAULT_ID, x, y, text, size);
 }
-void ui_text_invert(OledState *st, int x, int y, const char *text, int size)
-{
+void ui_text_invert(OledState *st, int x, int y, const char *text, int size) {
   hal_text_invert(DISPLAY_DEFAULT_ID, x, y, text, size);
 }
-void ui_center_text(OledState *st, int y, const char *text, int size)
-{
+void ui_center_text(OledState *st, int y, const char *text, int size) {
   hal_text_center(DISPLAY_DEFAULT_ID, y, text, size);
 }
 void ui_list_scroll(OledState *st, const char **items, int count,
-                    int selected, int start_y, int visible)
-{
+                    int selected, int start_y, int visible) {
   hal_list_scroll(DISPLAY_DEFAULT_ID, items, count, selected, start_y, visible);
 }
 
-static bool can_draw(CallerContext *caller)
-{
+static bool can_draw(CallerContext *caller) {
   if (!caller)
     return true;
   Device *dev = system_get_device_by_id(2);
@@ -274,8 +308,7 @@ static bool can_draw(CallerContext *caller)
   if (st->owner == OLED_OWNER_KERNEL)
     return (caller->type != CALLER_FVM);
 
-  if (caller->type == CALLER_FVM)
-  {
+  if (caller->type == CALLER_FVM) {
     if (!current_app || !current_app->update_ctx)
       return false;
     FvmAppContext *fctx = (FvmAppContext *)current_app->update_ctx;

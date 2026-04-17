@@ -7,7 +7,7 @@
 #include "button.h"
 
 
-void fetlink_ble_init();
+void fetlink_ble_init(uint8_t node_id);
 
 // chamado internamente pelo RxCallbacks — não usar diretamente
 void fetlink_ble_on_rx(const uint8_t* data, uint16_t len);

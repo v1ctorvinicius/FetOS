@@ -7,7 +7,8 @@
 typedef enum {
   EVENT_NONE = 0,
   EVENT_BUTTON_PRESS,
-  EVENT_TEXT
+  EVENT_TEXT,
+  EVENT_KEY
 } EventType;
 
 typedef struct {
@@ -18,6 +19,7 @@ typedef struct {
   union {
     int value;
     char text[EVENT_TEXT_SIZE];
+    char key_char;
   } payload;
 
 } Event;

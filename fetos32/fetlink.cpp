@@ -165,12 +165,14 @@ static void process_complete_frame() {
   bool is_last = FLINK_SEQ_IS_LAST(seq);
 
   if (idx == 0) {
-    // primeiro fragmento — (re)inicia buffer
+    // primeiro fragmento — (re)inicia buffer e rastreamento
     s_reassembly.active = true;
     s_reassembly.src = src;
     s_reassembly.type = type;
     s_reassembly.total_len = 0;
     s_reassembly.last_activity_ms = millis();
+    s_reassembly.received_mask = 0;
+    s_reassembly.last_frag_idx = 0xFF;  // ainda não sabemos qual é o last
   }
 
   if (!s_reassembly.active || s_reassembly.src != src) return;
@@ -186,7 +188,27 @@ static void process_complete_frame() {
   s_reassembly.total_len = offset + plen;
   s_reassembly.last_activity_ms = millis();
 
+  // Marca este fragmento como recebido (idx <= 63 garantido pelo campo de 6 bits)
+  s_reassembly.received_mask |= ((uint64_t)1 << idx);
   if (is_last) {
+    s_reassembly.last_frag_idx = idx;
+  }
+
+  if (is_last) {
+    // Verifica integridade: todos os fragmentos 0..idx devem ter chegado
+    uint64_t expected_mask = (idx < 63)
+      ? (((uint64_t)1 << (idx + 1)) - 1)  // bits 0..idx setados
+      : UINT64_MAX;                         // idx==63: todos 64 bits
+
+    if ((s_reassembly.received_mask & expected_mask) != expected_mask) {
+      // Há buracos — fragmento(s) perdido(s). Aborta para não salvar FVM corrompido.
+      uint64_t missing = expected_mask & ~s_reassembly.received_mask;
+      Serial.printf("[FetLink] INTEGRIDADE FALHOU — fragmentos perdidos: 0x%llX — descartando\n",
+                    (unsigned long long)missing);
+      s_reassembly.active = false;
+      return;
+    }
+
     s_reassembly.active = false;
     if (s_on_receive)
       s_on_receive(s_reassembly.src, s_reassembly.type,
