@@ -1,18 +1,29 @@
+#!/usr/bin/env python3
 import serial
 import sys
 import os
 import time
-import json
 import argparse
 
+# O jeito CERTO de corrigir UTF-8 no Windows sem causar Buffer Lock!
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding='utf-8')
+    sys.stderr.reconfigure(encoding='utf-8')
+
 class FetLink:
-    def __init__(self, port, baud=115200):
+    def __init__(self, port, baud=115200, verbose=False):
         self.port = port
         self.baud = baud
         self.ser = None
+        self.verbose = verbose
+
+    def vprint(self, *args, **kwargs):
+        if self.verbose:
+            print(f"[DEBUG][FetLink] ", *args, **kwargs)
 
     def connect(self):
         try:
+            self.vprint(f"Conectando na porta {self.port}...")
             self.ser = serial.Serial()
             self.ser.port = self.port
             self.ser.baudrate = self.baud
@@ -20,144 +31,143 @@ class FetLink:
             self.ser.rts = False
             self.ser.timeout = 1
             self.ser.open()
-            
             time.sleep(0.5)
             self.ser.reset_input_buffer()
             return True
         except Exception as e:
-            print(f"❌ Erro na porta {self.port}: {e}")
-            print("   Dica: Verifique se o Monitor Serial está aberto em outro programa.")
-            return False
+            print(f"[ERRO] Porta {self.port}: {e}")
+            sys.exit(1)
+
+    def delete_file(self, remote_name):
+        print(f"RM: {remote_name}")
+        if not remote_name.startswith('/'):
+            remote_name = f"/{remote_name}"
+            
+        cmd = f"FVM_DELETE {remote_name}\n"
+        self.ser.write(cmd.encode('utf-8'))
+        
+        start = time.time()
+        while time.time() - start < 3:
+            if self.ser.in_waiting > 0:
+                line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                self.vprint(f"ESP32: {line}")
+                if "DONE_DELETE" in line:
+                    print("OK: Arquivo removido.")
+                    return True
+                elif "ERR_NOT_FOUND" in line:
+                    print("AVISO: Arquivo nao encontrado.")
+                    return True
+        return False
 
     def send_file(self, local_path, remote_name):
         if not os.path.exists(local_path):
-            print(f"❌ Arquivo {local_path} não encontrado.")
+            print(f"ERRO: Arquivo local {local_path} nao existe.")
             return False
-
+        
         filesize = os.path.getsize(local_path)
-        print(f"📦 Enviando: {remote_name} ({filesize} bytes)")
-
+        print(f"UPLOAD: {remote_name} ({filesize} bytes)")
+        
+        self.vprint(f"Solicitando upload...")
         cmd = f"FVM_UPLOAD {remote_name} {filesize}\n"
         self.ser.write(cmd.encode('utf-8'))
-        print("⏳ Solicitando acesso ao LittleFS...")
-
+        
         start = time.time()
         acesso_liberado = False
         while time.time() - start < 3:
             if self.ser.in_waiting > 0:
                 line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                self.vprint(f"ESP32 diz: {line}")
                 if "OK" in line:
                     acesso_liberado = True
                     break
-                elif line != "":
-                    print(f"  [Log OS] {line}")
         
         if not acesso_liberado:
-            print("❌ ESP32 não deu OK para o upload (Timeout).")
+            print("ERRO: ESP32 recusou o upload.")
             return False
 
-        print("🚀 Acesso liberado! Despejando bytecode...")
+        self.vprint("Transmitindo...")
         with open(local_path, 'rb') as f:
             data = f.read()
-            chunk_size = 64
-            
-            for i in range(0, len(data), chunk_size):
-                chunk = data[i:i+chunk_size]
-                self.ser.write(chunk)
-                self.ser.flush()
-                
-                enviado = min(i + chunk_size, filesize)
-                porcentagem = int((enviado / filesize) * 100)
-                print(f"  Progresso: [{porcentagem:3d}%] {enviado}/{filesize} bytes", end='\r')
-                
-                time.sleep(0.06) 
+            for i in range(0, len(data), 64):
+                self.ser.write(data[i:i+64])
+                time.sleep(0.06)
+                if self.verbose:
+                    prog = min(100, int((i + 64) / len(data) * 100))
+                    # Flush forçado no terminal funciona perfeitamente agora!
+                    print(f"\r   ↳ {prog}%", end="", flush=True)
 
-        print("\n✅ Aguardando confirmação (DONE)...")
+        if self.verbose: print() # Pula a linha pós-upload
+        print("OK: Transmissao concluida. Aguardando DONE...")
+        
         start = time.time()
         while time.time() - start < 5:
             if self.ser.in_waiting > 0:
                 line = self.ser.readline().decode('utf-8', errors='ignore').strip()
+                self.vprint(f"ESP32: {line}")
                 if "DONE" in line:
-                    print("✨ SUCESSO! Arquivo gravado no LittleFS.")
+                    print("SUCESSO!")
                     return True
-                elif line != "":
-                    print(f"  [Log OS] {line}")
         
-        print("⚠️ ESP32 não confirmou o fechamento (DONE).")
+        print("ERRO: Timeout no salvamento.")
         return False
 
     def monitor(self):
-        print("🖥️ Entrando em modo MONITOR (Ctrl+C para sair)...")
+        print("MONITOR: (Ctrl+C para sair)...")
         try:
             while True:
                 if self.ser.in_waiting > 0:
-                    line = self.ser.read(self.ser.in_waiting).decode('utf-8', errors='ignore')
-                    print(line, end='')
+                    data = self.ser.read(self.ser.in_waiting)
+                    # flush=True garante que o monitor não tenha "delay"
+                    print(data.decode('utf-8', errors='replace'), end='', flush=True)
                 time.sleep(0.01)
         except KeyboardInterrupt:
-            print("\nSaindo do monitor...")
+            # O except pega o Ctrl+C, fecha silenciamente.
+            pass
 
     def close(self):
-        if self.ser: 
-            self.ser.dtr = False
-            self.ser.rts = False
-            self.ser.close()
-
-def hardware_wizard():
-    print("\n--- 🛠️ FetOS Hardware Config Wizard ---")
-    profile = input("Nome do Perfil (ex: ESP32_PROTOPACK): ")
-    devices = []
-    
-    while True:
-        d_type = input("\nTipo (DISPLAY_SSD1306, DISPLAY_LCD1602_PAR, BUTTON_GPIO, BUZZER_GPIO) [Vazio p/ sair]: ")
-        if not d_type: break
-        d_id = int(input("ID do Dispositivo (ex: 2): "))
-        dev = {"id": d_id, "type": d_type}
-
-        if d_type == "DISPLAY_SSD1306":
-            dev["address"] = input("Endereço I2C (ex: 0x3C): ")
-        elif d_type == "DISPLAY_LCD1602_PAR":
-            dev["pins"] = {
-                "rs": int(input("  RS: ")), "en": int(input("  EN: ")),
-                "d4": int(input("  D4: ")), "d5": int(input("  D5: ")),
-                "d6": int(input("  D6: ")), "d7": int(input("  D7: "))
-            }
-        else:
-            dev["pin"] = int(input("Pino GPIO: "))
-        devices.append(dev)
-
-    config = {"profile": profile, "devices": devices}
-    with open("hardware.json", "w") as f:
-        json.dump(config, f, indent=2)
-    print("\n✅ hardware.json gerado!")
+        if self.ser: self.ser.close()
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="FetLink Tool - Gerenciador do FetOS")
-    parser.add_argument("port", help="Porta Serial (COMx)")
+    base_parser = argparse.ArgumentParser(add_help=False)
+    base_parser.add_argument("-v", "--verbose", action="store_true")
+    base_parser.add_argument("--monitor", action="store_true")
+
+    parser = argparse.ArgumentParser(parents=[base_parser], description="FetLink Tool")
+    parser.add_argument("port", help="Porta Serial")
+    
     subparsers = parser.add_subparsers(dest="command")
 
-    up_parser = subparsers.add_parser("upload", help="Sobe um arquivo")
-    up_parser.add_argument("file", help="Caminho do arquivo local")
-    up_parser.add_argument("--name", help="Nome destino no LittleFS")
+    up_parser = subparsers.add_parser("upload", parents=[base_parser])
+    up_parser.add_argument("file")
+    up_parser.add_argument("--name")
 
-    cfg_parser = subparsers.add_parser("config", help="Gera e sobe o hardware.json")
+    rm_parser = subparsers.add_parser("rm", parents=[base_parser])
+    rm_parser.add_argument("name")
 
     args = parser.parse_args()
-
-    if args.command == "config":
-        hardware_wizard()
-        link = FetLink(args.port)
-        if link.connect():
-            if link.send_file("hardware.json", "hardware.json"):
-                link.monitor()
-            link.close()
-
-    elif args.command == "upload":
-        link = FetLink(args.port)
-        if link.connect():
-            remote = args.name if args.name else os.path.basename(args.file)
-            if link.send_file(args.file, remote):
-                link.monitor()
-            link.close()
-    else:
+    
+    if not args.command:
         parser.print_help()
+        sys.exit(1)
+
+    link = FetLink(args.port, verbose=args.verbose)
+
+    if args.command == "rm":
+        if link.connect():
+            res = link.delete_file(args.name)
+            link.close()
+            if not res: sys.exit(1)
+            
+    elif args.command == "upload":
+        if link.connect():
+            # Pegando o remote name exato, que agora o automator passa forçadamente
+            remote = args.name if args.name else os.path.basename(args.file)
+            ok = link.send_file(args.file, remote)
+
+            if ok and args.monitor:
+                link.monitor()
+
+            link.close()
+
+            if not ok:
+                sys.exit(1)
